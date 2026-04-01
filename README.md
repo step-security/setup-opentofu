@@ -2,9 +2,6 @@
 
 # GitHub Action for setting up OpenTofu
 
-> [!NOTE]
-> This is a community-maintained repository. The OpenTofu team does not fix non-critical bugs or add features, but is happy to review community pull requests.
-
 > [!TIP]
 > Having trouble with exit codes or the output format? Try setting the `tofu_wrapper` setting to `false`.
 
