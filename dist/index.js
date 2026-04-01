@@ -45194,6 +45194,7 @@ async function getRelease (
 
 
 
+
 // External
 
 
@@ -45223,7 +45224,53 @@ function mapOS (os) {
   return os;
 }
 
-async function downloadAndExtractCLI (url) {
+async function computeSHA256 (filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = (0,external_crypto_.createHash)('sha256');
+    const stream = (0,external_fs_.createReadStream)(filePath);
+    stream.on('data', (data) => hash.update(data));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
+async function verifyChecksum (zipPath, version, expectedName) {
+  const sumsUrl = `https://github.com/opentofu/opentofu/releases/download/v${version}/tofu_${version}_SHA256SUMS`;
+  core_debug(`Downloading SHA256SUMS from ${sumsUrl}`);
+
+  let sumsPath;
+  try {
+    sumsPath = await downloadTool(sumsUrl);
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Failed to download SHA256SUMS: ${cause}`);
+  }
+
+  const sumsContent = await external_fs_.promises.readFile(sumsPath, 'utf8');
+  const expectedLine = sumsContent
+    .split('\n')
+    .find((line) => line.includes(expectedName));
+
+  if (!expectedLine) {
+    throw new Error(`Checksum entry not found for ${expectedName} in SHA256SUMS`);
+  }
+
+  const expectedHash = expectedLine.split(/\s+/)[0];
+  const actualHash = await computeSHA256(zipPath);
+
+  core_debug(`Expected SHA256: ${expectedHash}`);
+  core_debug(`Actual SHA256:   ${actualHash}`);
+
+  if (actualHash !== expectedHash) {
+    throw new Error(
+      `SHA256 checksum mismatch for ${expectedName}. Expected ${expectedHash}, got ${actualHash}`
+    );
+  }
+
+  core_debug('SHA256 checksum verified successfully');
+}
+
+async function downloadAndExtractCLI (url, version, buildName) {
   core_debug(`Downloading OpenTofu CLI from ${url}`);
   let pathToCLIZip;
   try {
@@ -45236,6 +45283,9 @@ async function downloadAndExtractCLI (url) {
   if (!pathToCLIZip) {
     throw new Error(`Unable to download OpenTofu from ${url}`);
   }
+
+  // Verify SHA256 checksum
+  await verifyChecksum(pathToCLIZip, version, buildName);
 
   let pathToCLI;
 
@@ -45392,12 +45442,12 @@ async function run () {
         pathToCLI = cachedPath;
       } else {
         core_debug(`OpenTofu version ${release.version} not found in cache, downloading...`);
-        const extractedPath = await downloadAndExtractCLI(build.url);
+        const extractedPath = await downloadAndExtractCLI(build.url, release.version, build.name);
         core_debug(`Caching OpenTofu version ${release.version} to tool cache`);
         pathToCLI = await cacheDir(extractedPath, 'tofu', release.version, buildArch);
       }
     } else {
-      pathToCLI = await downloadAndExtractCLI(build.url);
+      pathToCLI = await downloadAndExtractCLI(build.url, release.version, build.name);
     }
 
     // Install our wrapper
