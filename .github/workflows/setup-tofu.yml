@@ -1,0 +1,125 @@
+name: 'Setup OpenTofu'
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  tofu-version-files:
+    name: 'OpenTofu Version Files'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{ github.actor == 'dependabot[bot]' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "windows-latest", "macos-latest"]') }}
+        tofu-version-files: ['./.github/workflows/data/local/.opentofu-version']
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup OpenTofu - ${{ matrix['tofu-version-files'] }}
+      uses: ./
+      with:
+        tofu_version_file: ${{ matrix['tofu-version-files'] }}
+        tofu_wrapper: false
+
+    - name: Validate that OpenTofu was installed
+      run: tofu version | grep 'OpenTofu v'
+  tofu-versions:
+    name: 'OpenTofu Versions'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{ github.actor == 'dependabot[bot]' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "windows-latest", "macos-latest"]') }}
+        tofu-versions: [1.6.0, latest]
+        tofu-wrapper: [true, false]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup OpenTofu - ${{ matrix['tofu-versions'] }}
+      uses: ./
+      with:
+        tofu_version: ${{ matrix['tofu-versions'] }}
+        tofu_wrapper: ${{ matrix['tofu-wrapper'] }}
+
+    - name: Validate that OpenTofu was installed
+      run: tofu version | grep 'OpenTofu v'
+
+    - name: Validate the Version ${{ matrix['tofu-versions'] }} was installed
+      if: ${{ matrix['tofu-versions'] != 'latest' }}
+      run: tofu version | grep ${{ matrix['tofu-versions']}}
+  tofu-arguments:
+    name: 'OpenTofu Arguments'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{ github.actor == 'dependabot[bot]' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "windows-latest", "macos-latest"]') }}
+        tofu-wrapper: [true, false]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup OpenTofu
+      uses: ./
+      with:
+        tofu_wrapper: ${{ matrix['tofu-wrapper'] }}
+
+    - name: Check No Arguments
+      run: tofu || exit 0
+
+    - name: Check Single Argument
+      run: tofu help || exit 0
+
+    - name: Check Single Argument Hyphen
+      run: tofu -help
+
+    - name: Check Single Argument Double Hyphen
+      run: tofu --help
+
+    - name: Check Single Argument Subcommand
+      run: tofu fmt -check
+
+    - name: Check Multiple Arguments Subcommand
+      run: tofu fmt -check -list=true -no-color
+  tofu-run-local:
+    name: 'OpenTofu Run Local'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ${{ github.actor == 'dependabot[bot]' && fromJson('["ubuntu-latest"]') || fromJson('["ubuntu-latest", "windows-latest", "macos-latest"]') }}
+        tofu-wrapper: [true, false]
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./.github/workflows/data/local
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup OpenTofu
+      uses: ./
+      with:
+        tofu_wrapper: ${{ matrix['tofu-wrapper'] }}
+
+    - name: OpenTofu Init
+      run: tofu init
+
+    - name: OpenTofu Format
+      run: tofu fmt -check
+
+    - name: OpenTofu Plan
+      id: plan
+      run: tofu plan
+
+    - name: Print OpenTofu Plan
+      if: ${{ matrix['tofu-wrapper'] == 'true' }}
+      run: echo "${{ steps.plan.outputs.stdout }}"
