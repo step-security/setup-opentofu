@@ -24,7 +24,7 @@
 		"@actions/http-client": "^4.0.0",
 		"@actions/io": "^3.0.2",
 		"@actions/tool-cache": "^4.0.0",
-		"axios": "^1.13.6",
+		"axios": "^1.15.2",
 		"semver": "^7.7.4"
 	},
 	"devDependencies": {
