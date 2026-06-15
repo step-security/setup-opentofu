@@ -1,37 +1,211 @@
 name: Auto Cherry-Pick from Upstream
 
+# Self-contained net-diff sync (POC for testing in this repo).
+#
+# Engine: apply the CUMULATIVE diff between two upstream tags with `git apply
+# --3way`, instead of replaying each upstream commit with `patch`. This is
+# idempotent (already-synced content -> no-op, no duplication), creates new
+# files, and surfaces genuine clashes as conflict markers instead of silently
+# dropping/corrupting them.
+#
+# Buckets (which paths we take from upstream):
+#   - generated artifacts (dist/) and deps/lockfiles -> excluded; rebuilt or
+#     owned by dependabot.
+#   - fork-owned CI (.github/workflows/) -> excluded; keep ours.
+#   - everything else (lib/, action.yml, README, ...) -> apply upstream net diff.
+#
+# Branch name: auto-cherry-pick-<to_tag>
+
 on:
   workflow_dispatch:
     inputs:
+      to_tag:
+        description: "Upstream release tag to sync TO (e.g. v2.0.1)"
+        required: true
+      from_tag:
+        description: "Upstream tag to sync FROM (blank = the tag just before to_tag)"
+        required: false
       base_branch:
         description: "Base branch to create the PR against"
-        required: true
-        default: "main"
-      mode:
-        description: "Run mode: cherry-pick or verify"
         required: false
-        default: "cherry-pick"
+        default: "main"
       node_version:
         description: "Node.js version to use"
         required: false
         default: "24"
 
-  pull_request:
-    types: [opened, synchronize, labeled]
-
 permissions:
   contents: write
   pull-requests: write
-  packages: read
-  issues: write
+
+env:
+  UPSTREAM_OWNER: opentofu
+  UPSTREAM_REPO: setup-opentofu
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   cherry-pick:
-    if: github.event_name == 'workflow_dispatch' || contains(fromJson(toJson(github.event.pull_request.labels)).*.name, 'review-required')
-    uses: step-security/reusable-workflows/.github/workflows/auto_cherry_pick.yaml@v1
-    with:
-      original-owner: "opentofu"
-      repo-name: "setup-opentofu"
-      base_branch: ${{ inputs.base_branch }}
-      mode: ${{ github.event_name == 'pull_request' && 'verify' || inputs.mode }}
-      node_version: ${{ inputs.node_version || '24' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout base branch (full history)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.base_branch }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve from/to tags and fetch them (separate namespace)
+        id: tags
+        run: |
+          set -euo pipefail
+          UPSTREAM_URL="https://github.com/${UPSTREAM_OWNER}/${UPSTREAM_REPO}.git"
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || true
+
+          TO="${{ inputs.to_tag }}"
+          FROM="${{ inputs.from_tag }}"
+
+          if [ -z "$FROM" ]; then
+            echo "🔎 Auto-detecting the tag before $TO ..."
+            FROM=$(git ls-remote --tags --refs upstream 'v*' \
+              | awk -F/ '{print $NF}' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | awk -v to="$TO" '$0==to{print prev} {prev=$0}')
+            if [ -z "$FROM" ]; then
+              echo "❌ Could not auto-detect a previous tag before $TO. Pass from_tag explicitly."
+              exit 1
+            fi
+          fi
+          echo "📌 Sync range: $FROM -> $TO"
+
+          # IMPORTANT: our local tags (e.g. v2.0.0) are step-security's release
+          # objects, which differ from upstream's. Fetch upstream tags into a
+          # separate ref namespace so they never collide with local tags.
+          git fetch upstream \
+            "refs/tags/${FROM}:refs/upstream/${FROM}" \
+            "refs/tags/${TO}:refs/upstream/${TO}"
+
+          echo "from=$FROM"                       >> "$GITHUB_OUTPUT"
+          echo "to=$TO"                           >> "$GITHUB_OUTPUT"
+          echo "branch=auto-cherry-pick-$TO"      >> "$GITHUB_OUTPUT"
+
+      - name: Create sync branch
+        run: git switch -c "${{ steps.tags.outputs.branch }}"
+
+      - name: Apply upstream net diff (3-way)
+        id: apply
+        run: |
+          set -uo pipefail
+          FROM="refs/upstream/${{ steps.tags.outputs.from }}"
+          TO="refs/upstream/${{ steps.tags.outputs.to }}"
+
+          # Cumulative diff, source only. Exclusions = generated + deps + fork-owned CI.
+          git diff -M "$FROM" "$TO" -- . \
+            ':(exclude)dist' \
+            ':(exclude)wrapper/dist' \
+            ':(exclude)package.json' \
+            ':(exclude)package-lock.json' \
+            ':(exclude)yarn.lock' \
+            ':(exclude)pnpm-lock.yaml' \
+            ':(exclude).gitignore' \
+            ':(exclude).github/workflows' \
+            > /tmp/upstream.patch
+
+          echo "### Sync \`${{ steps.tags.outputs.from }}\` → \`${{ steps.tags.outputs.to }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Patch: $(wc -l < /tmp/upstream.patch) lines" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -s /tmp/upstream.patch ]; then
+            echo "✅ No applicable source changes in this range."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "empty=false" >> "$GITHUB_OUTPUT"
+
+          # 3-way apply: clean hunks land; genuine clashes become conflict markers.
+          git apply --3way --whitespace=nowarn /tmp/upstream.patch || true
+
+          if grep -rln --exclude-dir=.git --exclude-dir=node_modules -e '^<<<<<<< ' . >/dev/null 2>&1; then
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Conflicts detected in:" | tee -a "$GITHUB_STEP_SUMMARY"
+            grep -rln --exclude-dir=.git --exclude-dir=node_modules -e '^<<<<<<< ' . \
+              | sed 's/^/- /' | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Applied cleanly." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ---- Clean path: build, test, then commit ----
+      - name: Set up Node.js
+        if: steps.apply.outputs.empty == 'false' && steps.apply.outputs.conflicts == 'false'
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Install, rebuild dist, and test
+        if: steps.apply.outputs.empty == 'false' && steps.apply.outputs.conflicts == 'false'
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build      # regenerate dist/ — never cherry-picked
+          npm test
+
+      # ---- Commit + push (both clean and conflict paths) ----
+      - name: Commit and push
+        if: steps.apply.outputs.empty == 'false'
+        id: push
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."; echo "pushed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "${{ steps.apply.outputs.conflicts }}" = "true" ]; then
+            MSG="chore: cherry-pick ${{ steps.tags.outputs.to }} from upstream [CONFLICTS — needs manual resolution]"
+          else
+            MSG="chore: cherry-pick ${{ steps.tags.outputs.to }} from upstream"
+          fi
+          git commit -m "$MSG"
+          git push --force origin "HEAD:${{ steps.tags.outputs.branch }}"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update PR
+        if: steps.push.outputs.pushed == 'true'
+        run: |
+          set -uo pipefail
+          BRANCH="${{ steps.tags.outputs.branch }}"
+          BASE="${{ inputs.base_branch }}"
+          CONFLICTS="${{ steps.apply.outputs.conflicts }}"
+
+          if [ "$CONFLICTS" = "true" ]; then
+            TITLE="chore: cherry-pick ${{ steps.tags.outputs.to }} from upstream [CONFLICTS]"
+            BODY=$'Automated net-diff sync from upstream `${{ steps.tags.outputs.from }}` → `${{ steps.tags.outputs.to }}`.\n\n⚠️ **This PR contains unresolved conflict markers.** Resolve them, then run `npm ci && npm run build && npm test` before merging.'
+            DRAFT="--draft"
+          else
+            TITLE="chore: cherry-pick ${{ steps.tags.outputs.to }} from upstream"
+            BODY=$'Automated net-diff sync from upstream `${{ steps.tags.outputs.from }}` → `${{ steps.tags.outputs.to }}`.\n\nApplied cleanly; `dist/` rebuilt and tests passed.'
+            DRAFT=""
+          fi
+
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --title "$TITLE" --body "$BODY"
+            echo "🔁 Updated existing PR."
+          else
+            gh pr create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY" $DRAFT
+            echo "✅ Created PR."
+          fi
+
+      - name: Fail the run if conflicts need a human
+        if: steps.apply.outputs.conflicts == 'true'
+        run: |
+          echo "::error::Sync produced conflict markers — a draft PR was opened for manual resolution."
+          exit 1
