@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: MPL-2.0
  */
 
+<<<<<<< ours
 import { setFailed, debug, info, error as logError } from '@actions/core';
 import axios from 'axios';
 import * as fs from 'fs';
@@ -47,6 +48,12 @@ async function validateSubscription () {
     info('Timeout or API not reachable. Continuing to next step.');
   }
 }
+=======
+import { setFailed, debug } from '@actions/core';
+
+import setup from './lib/setup-tofu.js';
+import { getErrorMessage, getErrorDetail } from './lib/error-utils.js';
+>>>>>>> theirs
 
 (async () => {
   try {
