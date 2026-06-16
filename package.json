@@ -34,7 +34,8 @@
 	},
 	"semistandard": {
 		"ignore": [
-			"**/dist/**"
+			"**/dist/**",
+			".github/scripts/**"
 		]
 	}
 }

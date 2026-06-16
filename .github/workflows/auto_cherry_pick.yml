@@ -3,35 +3,183 @@ name: Auto Cherry-Pick from Upstream
 on:
   workflow_dispatch:
     inputs:
+      to_tag:
+        description: "Upstream release tag to sync TO (e.g. v2.0.1)"
+        required: true
+      from_tag:
+        description: "Upstream tag to sync FROM (blank = the tag just before to_tag)"
+        required: false
       base_branch:
         description: "Base branch to create the PR against"
-        required: true
+        required: false
         default: "main"
-      mode:
-        description: "Run mode: cherry-pick or verify"
-        required: false
-        default: "cherry-pick"
-      node_version:
-        description: "Node.js version to use"
-        required: false
-        default: "24"
-
-  pull_request:
-    types: [opened, synchronize, labeled]
 
 permissions:
   contents: write
   pull-requests: write
-  packages: read
-  issues: write
 
 jobs:
   cherry-pick:
-    if: github.event_name == 'workflow_dispatch' || contains(fromJson(toJson(github.event.pull_request.labels)).*.name, 'review-required')
-    uses: step-security/reusable-workflows/.github/workflows/auto_cherry_pick.yaml@v1
-    with:
-      original-owner: "opentofu"
-      repo-name: "setup-opentofu"
-      base_branch: ${{ inputs.base_branch }}
-      mode: ${{ github.event_name == 'pull_request' && 'verify' || inputs.mode }}
-      node_version: ${{ inputs.node_version || '24' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout base branch (full history)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.base_branch }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Run net-diff sync
+        env:
+          UPSTREAM_OWNER: opentofu
+          UPSTREAM_REPO: setup-opentofu
+          TO_TAG: ${{ inputs.to_tag }}
+          FROM_TAG: ${{ inputs.from_tag }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          : "${UPSTREAM_OWNER:?}" "${UPSTREAM_REPO:?}" "${TO_TAG:?}" "${BASE_BRANCH:?}"
+          FROM_TAG="${FROM_TAG:-}"
+          summary () { echo "$@" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"; }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_OWNER}/${UPSTREAM_REPO}.git" 2>/dev/null || true
+
+          if [ -z "$FROM_TAG" ]; then
+            FROM_TAG=$(git ls-remote --tags --refs upstream 'v*' \
+              | awk -F/ '{print $NF}' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | awk -v to="$TO_TAG" '$0==to{print prev} {prev=$0}')
+            [ -n "$FROM_TAG" ] || { echo "No tag before $TO_TAG; pass from_tag."; exit 1; }
+          fi
+          echo "Sync range: $FROM_TAG -> $TO_TAG"
+
+          # Our local tags (step-security releases) differ from upstream's same-named
+          # tags, so fetch upstream's into a private namespace to avoid clobbering.
+          git fetch upstream \
+            "refs/tags/${FROM_TAG}:refs/upstream/${FROM_TAG}" \
+            "refs/tags/${TO_TAG}:refs/upstream/${TO_TAG}"
+
+          BRANCH="auto-cherry-pick-${TO_TAG}"
+          git switch -c "$BRANCH"
+
+          # Cumulative diff. Excludes = generated (dist), deps (dependabot owns),
+          # and fork-owned (.github, README).
+          git diff -M "refs/upstream/${FROM_TAG}" "refs/upstream/${TO_TAG}" -- . \
+            ':(exclude)dist' ':(exclude)wrapper/dist' \
+            ':(exclude)package.json' ':(exclude)package-lock.json' \
+            ':(exclude)yarn.lock' ':(exclude)pnpm-lock.yaml' \
+            ':(exclude).gitignore' ':(exclude).github' ':(exclude)README.md' \
+            > /tmp/upstream.patch
+
+          summary "### Sync \`${FROM_TAG}\` -> \`${TO_TAG}\` ($(wc -l < /tmp/upstream.patch) patch lines)"
+          if [ ! -s /tmp/upstream.patch ]; then
+            echo "No applicable source changes."
+            exit 0
+          fi
+
+          git apply --3way --whitespace=nowarn /tmp/upstream.patch || true
+
+          # Fork header overlay: re-stamp the StepSecurity copyright line so it
+          # never counts as a conflict. Resolves markers in the leading comment
+          # block by taking ours; body conflicts are left for a human.
+          cat > /tmp/normalize.mjs <<'NORMALIZE_EOF'
+          import { readFileSync, writeFileSync } from 'node:fs'
+
+          const FORK_COPYRIGHT = ' * Copyright (c) StepSecurity'
+
+          function normalizeHeader (src) {
+            if (!src.startsWith('/**')) return src
+            const end = src.indexOf('*/')
+            if (end === -1) return src
+
+            let header = src.slice(0, end + 2)
+            const rest = src.slice(end + 2)
+
+            header = header.replace(
+              /^<<<<<<< ours\r?\n([\s\S]*?)^=======\r?\n[\s\S]*?^>>>>>>> theirs\r?\n/gm,
+              '$1'
+            )
+
+            if (!/Copyright \(c\) StepSecurity/.test(header)) {
+              const lines = header.split('\n')
+              let lastCopyright = -1
+              for (let i = 0; i < lines.length; i++) {
+                if (/^\s*\*\s*Copyright \(c\)/.test(lines[i])) lastCopyright = i
+              }
+              if (lastCopyright !== -1) {
+                lines.splice(lastCopyright + 1, 0, FORK_COPYRIGHT)
+                header = lines.join('\n')
+              }
+            }
+
+            return header + rest
+          }
+
+          for (const file of process.argv.slice(2)) {
+            let before
+            try { before = readFileSync(file, 'utf8') } catch { continue }
+            const after = normalizeHeader(before)
+            if (after !== before) {
+              writeFileSync(file, after)
+              console.log(`normalized header: ${file}`)
+            }
+          }
+          NORMALIZE_EOF
+          find index.js lib wrapper -type f -name '*.js' -not -path '*/dist/*' -print0 \
+            | xargs -0 node /tmp/normalize.mjs
+
+          CONFLICTS=false
+          if grep -rln --exclude-dir=.git --exclude-dir=node_modules -e '^<<<<<<< ' . >/dev/null 2>&1; then
+            CONFLICTS=true
+            summary "⚠️ Genuine conflicts (manual resolution needed):"
+            grep -rln --exclude-dir=.git --exclude-dir=node_modules -e '^<<<<<<< ' . \
+              | sed 's/^/- /' | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+          else
+            summary "✅ Applied cleanly (overlay normalized)."
+            npm ci
+            npm run build
+            npm test
+          fi
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+
+          if [ "$CONFLICTS" = true ]; then
+            COMMIT_MSG="chore: cherry-pick ${TO_TAG} from upstream [CONFLICTS - needs manual resolution]"
+            PR_TITLE="chore: cherry-pick ${TO_TAG} from upstream [CONFLICTS]"
+            PR_BODY=$(printf 'Automated net-diff sync from upstream `%s` -> `%s`.\n\nContains unresolved conflict markers. Resolve them, then run `npm ci && npm run build && npm test` before merging.' "$FROM_TAG" "$TO_TAG")
+            DRAFT=--draft
+          else
+            COMMIT_MSG="chore: cherry-pick ${TO_TAG} from upstream"
+            PR_TITLE="$COMMIT_MSG"
+            PR_BODY=$(printf 'Automated net-diff sync from upstream `%s` -> `%s`.\n\nApplied cleanly; fork header overlay normalized, dist rebuilt, tests passed.' "$FROM_TAG" "$TO_TAG")
+            DRAFT=
+          fi
+
+          git commit -q -m "$COMMIT_MSG"
+          git push --force origin "HEAD:${BRANCH}"
+
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --title "$PR_TITLE" --body "$PR_BODY"
+          else
+            gh pr create --head "$BRANCH" --base "$BASE_BRANCH" --title "$PR_TITLE" --body "$PR_BODY" $DRAFT
+          fi
+
+          [ "$CONFLICTS" = false ] || { echo "::error::Conflicts present; draft PR opened for manual resolution."; exit 1; }

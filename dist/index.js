@@ -38108,6 +38108,1328 @@ function getIDToken(aud) {
  */
 
 //# sourceMappingURL=core.js.map
+// EXTERNAL MODULE: external "url"
+var external_url_ = __nccwpck_require__(7016);
+// EXTERNAL MODULE: ./node_modules/semver/index.js
+var node_modules_semver = __nccwpck_require__(2088);
+;// CONCATENATED MODULE: ./node_modules/@actions/tool-cache/lib/manifest.js
+var manifest_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+
+
+
+
+
+// Internal object for testability (allows mocking in ESM)
+const _internal = {
+    readLinuxVersionFile() {
+        const lsbReleaseFile = '/etc/lsb-release';
+        const osReleaseFile = '/etc/os-release';
+        let contents = '';
+        if (external_fs_.existsSync(lsbReleaseFile)) {
+            contents = external_fs_.readFileSync(lsbReleaseFile).toString();
+        }
+        else if (external_fs_.existsSync(osReleaseFile)) {
+            contents = external_fs_.readFileSync(osReleaseFile).toString();
+        }
+        return contents;
+    }
+};
+function _findMatch(versionSpec, stable, candidates, archFilter) {
+    return manifest_awaiter(this, void 0, void 0, function* () {
+        const platFilter = os.platform();
+        let result;
+        let match;
+        let file;
+        for (const candidate of candidates) {
+            const version = candidate.version;
+            debug(`check ${version} satisfies ${versionSpec}`);
+            if (semver.satisfies(version, versionSpec) &&
+                (!stable || candidate.stable === stable)) {
+                file = candidate.files.find(item => {
+                    debug(`${item.arch}===${archFilter} && ${item.platform}===${platFilter}`);
+                    let chk = item.arch === archFilter && item.platform === platFilter;
+                    if (chk && item.platform_version) {
+                        const osVersion = _getOsVersion();
+                        if (osVersion === item.platform_version) {
+                            chk = true;
+                        }
+                        else {
+                            chk = semver.satisfies(osVersion, item.platform_version);
+                        }
+                    }
+                    return chk;
+                });
+                if (file) {
+                    debug(`matched ${candidate.version}`);
+                    match = candidate;
+                    break;
+                }
+            }
+        }
+        if (match && file) {
+            // clone since we're mutating the file list to be only the file that matches
+            result = Object.assign({}, match);
+            result.files = [file];
+        }
+        return result;
+    });
+}
+function _getOsVersion() {
+    // TODO: add windows and other linux, arm variants
+    // right now filtering on version is only an ubuntu and macos scenario for tools we build for hosted (python)
+    const plat = os.platform();
+    let version = '';
+    if (plat === 'darwin') {
+        version = cp.execSync('sw_vers -productVersion').toString();
+    }
+    else if (plat === 'linux') {
+        // lsb_release process not in some containers, readfile
+        // Run cat /etc/lsb-release
+        // DISTRIB_ID=Ubuntu
+        // DISTRIB_RELEASE=18.04
+        // DISTRIB_CODENAME=bionic
+        // DISTRIB_DESCRIPTION="Ubuntu 18.04.4 LTS"
+        const lsbContents = _internal.readLinuxVersionFile();
+        if (lsbContents) {
+            const lines = lsbContents.split('\n');
+            for (const line of lines) {
+                const parts = line.split('=');
+                if (parts.length === 2 &&
+                    (parts[0].trim() === 'VERSION_ID' ||
+                        parts[0].trim() === 'DISTRIB_RELEASE')) {
+                    version = parts[1].trim().replace(/^"/, '').replace(/"$/, '');
+                    break;
+                }
+            }
+        }
+    }
+    return version;
+}
+// Alias for backwards compatibility
+function _readLinuxVersionFile() {
+    return _internal.readLinuxVersionFile();
+}
+//# sourceMappingURL=manifest.js.map
+// EXTERNAL MODULE: external "stream"
+var external_stream_ = __nccwpck_require__(2203);
+// EXTERNAL MODULE: external "util"
+var external_util_ = __nccwpck_require__(9023);
+;// CONCATENATED MODULE: ./node_modules/@actions/tool-cache/lib/retry-helper.js
+var retry_helper_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+
+/**
+ * Internal class for retries
+ */
+class RetryHelper {
+    constructor(maxAttempts, minSeconds, maxSeconds) {
+        if (maxAttempts < 1) {
+            throw new Error('max attempts should be greater than or equal to 1');
+        }
+        this.maxAttempts = maxAttempts;
+        this.minSeconds = Math.floor(minSeconds);
+        this.maxSeconds = Math.floor(maxSeconds);
+        if (this.minSeconds > this.maxSeconds) {
+            throw new Error('min seconds should be less than or equal to max seconds');
+        }
+    }
+    execute(action, isRetryable) {
+        return retry_helper_awaiter(this, void 0, void 0, function* () {
+            let attempt = 1;
+            while (attempt < this.maxAttempts) {
+                // Try
+                try {
+                    return yield action();
+                }
+                catch (err) {
+                    if (isRetryable && !isRetryable(err)) {
+                        throw err;
+                    }
+                    info(err.message);
+                }
+                // Sleep
+                const seconds = this.getSleepAmount();
+                info(`Waiting ${seconds} seconds before trying again`);
+                yield this.sleep(seconds);
+                attempt++;
+            }
+            // Last attempt
+            return yield action();
+        });
+    }
+    getSleepAmount() {
+        return (Math.floor(Math.random() * (this.maxSeconds - this.minSeconds + 1)) +
+            this.minSeconds);
+    }
+    sleep(seconds) {
+        return retry_helper_awaiter(this, void 0, void 0, function* () {
+            return new Promise(resolve => setTimeout(resolve, seconds * 1000));
+        });
+    }
+}
+//# sourceMappingURL=retry-helper.js.map
+;// CONCATENATED MODULE: ./node_modules/@actions/tool-cache/lib/tool-cache.js
+var tool_cache_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class HTTPError extends Error {
+    constructor(httpStatusCode) {
+        super(`Unexpected HTTP response: ${httpStatusCode}`);
+        this.httpStatusCode = httpStatusCode;
+        Object.setPrototypeOf(this, new.target.prototype);
+    }
+}
+const tool_cache_IS_WINDOWS = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
+const userAgent = 'actions/tool-cache';
+/**
+ * Download a tool from an url and stream it into a file
+ *
+ * @param url       url of tool to download
+ * @param dest      path to download tool
+ * @param auth      authorization header
+ * @param headers   other headers
+ * @returns         path to downloaded tool
+ */
+function downloadTool(url, dest, auth, headers) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        dest = dest || external_path_.join(_getTempDirectory(), external_crypto_.randomUUID());
+        yield mkdirP(external_path_.dirname(dest));
+        core_debug(`Downloading ${url}`);
+        core_debug(`Destination ${dest}`);
+        const maxAttempts = 3;
+        const minSeconds = _getGlobal('TEST_DOWNLOAD_TOOL_RETRY_MIN_SECONDS', 10);
+        const maxSeconds = _getGlobal('TEST_DOWNLOAD_TOOL_RETRY_MAX_SECONDS', 20);
+        const retryHelper = new RetryHelper(maxAttempts, minSeconds, maxSeconds);
+        return yield retryHelper.execute(() => tool_cache_awaiter(this, void 0, void 0, function* () {
+            return yield downloadToolAttempt(url, dest || '', auth, headers);
+        }), (err) => {
+            if (err instanceof HTTPError && err.httpStatusCode) {
+                // Don't retry anything less than 500, except 408 Request Timeout and 429 Too Many Requests
+                if (err.httpStatusCode < 500 &&
+                    err.httpStatusCode !== 408 &&
+                    err.httpStatusCode !== 429) {
+                    return false;
+                }
+            }
+            // Otherwise retry
+            return true;
+        });
+    });
+}
+function downloadToolAttempt(url, dest, auth, headers) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        if (external_fs_.existsSync(dest)) {
+            throw new Error(`Destination file path ${dest} already exists`);
+        }
+        // Get the response headers
+        const http = new lib_HttpClient(userAgent, [], {
+            allowRetries: false
+        });
+        if (auth) {
+            core_debug('set auth');
+            if (headers === undefined) {
+                headers = {};
+            }
+            headers.authorization = auth;
+        }
+        const response = yield http.get(url, headers);
+        if (response.message.statusCode !== 200) {
+            const err = new HTTPError(response.message.statusCode);
+            core_debug(`Failed to download from "${url}". Code(${response.message.statusCode}) Message(${response.message.statusMessage})`);
+            throw err;
+        }
+        // Download the response body
+        const pipeline = external_util_.promisify(external_stream_.pipeline);
+        const responseMessageFactory = _getGlobal('TEST_DOWNLOAD_TOOL_RESPONSE_MESSAGE_FACTORY', () => response.message);
+        const readStream = responseMessageFactory();
+        let succeeded = false;
+        try {
+            yield pipeline(readStream, external_fs_.createWriteStream(dest));
+            core_debug('download complete');
+            succeeded = true;
+            return dest;
+        }
+        finally {
+            // Error, delete dest before retry
+            if (!succeeded) {
+                core_debug('download failed');
+                try {
+                    yield rmRF(dest);
+                }
+                catch (err) {
+                    core_debug(`Failed to delete '${dest}'. ${err.message}`);
+                }
+            }
+        }
+    });
+}
+/**
+ * Extract a .7z file
+ *
+ * @param file     path to the .7z file
+ * @param dest     destination directory. Optional.
+ * @param _7zPath  path to 7zr.exe. Optional, for long path support. Most .7z archives do not have this
+ * problem. If your .7z archive contains very long paths, you can pass the path to 7zr.exe which will
+ * gracefully handle long paths. By default 7zdec.exe is used because it is a very small program and is
+ * bundled with the tool lib. However it does not support long paths. 7zr.exe is the reduced command line
+ * interface, it is smaller than the full command line interface, and it does support long paths. At the
+ * time of this writing, it is freely available from the LZMA SDK that is available on the 7zip website.
+ * Be sure to check the current license agreement. If 7zr.exe is bundled with your action, then the path
+ * to 7zr.exe can be pass to this function.
+ * @returns        path to the destination directory
+ */
+function extract7z(file, dest, _7zPath) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        ok(tool_cache_IS_WINDOWS, 'extract7z() not supported on current OS');
+        ok(file, 'parameter "file" is required');
+        dest = yield _createExtractFolder(dest);
+        const originalCwd = process.cwd();
+        process.chdir(dest);
+        if (_7zPath) {
+            try {
+                const logLevel = core.isDebug() ? '-bb1' : '-bb0';
+                const args = [
+                    'x', // eXtract files with full paths
+                    logLevel, // -bb[0-3] : set output log level
+                    '-bd', // disable progress indicator
+                    '-sccUTF-8', // set charset for for console input/output
+                    file
+                ];
+                const options = {
+                    silent: true
+                };
+                yield exec(`"${_7zPath}"`, args, options);
+            }
+            finally {
+                process.chdir(originalCwd);
+            }
+        }
+        else {
+            const escapedScript = path
+                .join(__dirname, '..', 'scripts', 'Invoke-7zdec.ps1')
+                .replace(/'/g, "''")
+                .replace(/"|\n|\r/g, ''); // double-up single quotes, remove double quotes and newlines
+            const escapedFile = file.replace(/'/g, "''").replace(/"|\n|\r/g, '');
+            const escapedTarget = dest.replace(/'/g, "''").replace(/"|\n|\r/g, '');
+            const command = `& '${escapedScript}' -Source '${escapedFile}' -Target '${escapedTarget}'`;
+            const args = [
+                '-NoLogo',
+                '-Sta',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Unrestricted',
+                '-Command',
+                command
+            ];
+            const options = {
+                silent: true
+            };
+            try {
+                const powershellPath = yield io.which('powershell', true);
+                yield exec(`"${powershellPath}"`, args, options);
+            }
+            finally {
+                process.chdir(originalCwd);
+            }
+        }
+        return dest;
+    });
+}
+/**
+ * Extract a compressed tar archive
+ *
+ * @param file     path to the tar
+ * @param dest     destination directory. Optional.
+ * @param flags    flags for the tar command to use for extraction. Defaults to 'xz' (extracting gzipped tars). Optional.
+ * @returns        path to the destination directory
+ */
+function extractTar(file_1, dest_1) {
+    return tool_cache_awaiter(this, arguments, void 0, function* (file, dest, flags = 'xz') {
+        if (!file) {
+            throw new Error("parameter 'file' is required");
+        }
+        // Create dest
+        dest = yield _createExtractFolder(dest);
+        // Determine whether GNU tar
+        core.debug('Checking tar --version');
+        let versionOutput = '';
+        yield exec('tar --version', [], {
+            ignoreReturnCode: true,
+            silent: true,
+            listeners: {
+                stdout: (data) => (versionOutput += data.toString()),
+                stderr: (data) => (versionOutput += data.toString())
+            }
+        });
+        core.debug(versionOutput.trim());
+        const isGnuTar = versionOutput.toUpperCase().includes('GNU TAR');
+        // Initialize args
+        let args;
+        if (flags instanceof Array) {
+            args = flags;
+        }
+        else {
+            args = [flags];
+        }
+        if (core.isDebug() && !flags.includes('v')) {
+            args.push('-v');
+        }
+        let destArg = dest;
+        let fileArg = file;
+        if (tool_cache_IS_WINDOWS && isGnuTar) {
+            args.push('--force-local');
+            destArg = dest.replace(/\\/g, '/');
+            // Technically only the dest needs to have `/` but for aesthetic consistency
+            // convert slashes in the file arg too.
+            fileArg = file.replace(/\\/g, '/');
+        }
+        if (isGnuTar) {
+            // Suppress warnings when using GNU tar to extract archives created by BSD tar
+            args.push('--warning=no-unknown-keyword');
+            args.push('--overwrite');
+        }
+        args.push('-C', destArg, '-f', fileArg);
+        yield exec(`tar`, args);
+        return dest;
+    });
+}
+/**
+ * Extract a xar compatible archive
+ *
+ * @param file     path to the archive
+ * @param dest     destination directory. Optional.
+ * @param flags    flags for the xar. Optional.
+ * @returns        path to the destination directory
+ */
+function extractXar(file_1, dest_1) {
+    return tool_cache_awaiter(this, arguments, void 0, function* (file, dest, flags = []) {
+        ok(IS_MAC, 'extractXar() not supported on current OS');
+        ok(file, 'parameter "file" is required');
+        dest = yield _createExtractFolder(dest);
+        let args;
+        if (flags instanceof Array) {
+            args = flags;
+        }
+        else {
+            args = [flags];
+        }
+        args.push('-x', '-C', dest, '-f', file);
+        if (core.isDebug()) {
+            args.push('-v');
+        }
+        const xarPath = yield io.which('xar', true);
+        yield exec(`"${xarPath}"`, _unique(args));
+        return dest;
+    });
+}
+/**
+ * Extract a zip
+ *
+ * @param file     path to the zip
+ * @param dest     destination directory. Optional.
+ * @returns        path to the destination directory
+ */
+function extractZip(file, dest) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        if (!file) {
+            throw new Error("parameter 'file' is required");
+        }
+        dest = yield _createExtractFolder(dest);
+        if (tool_cache_IS_WINDOWS) {
+            yield extractZipWin(file, dest);
+        }
+        else {
+            yield extractZipNix(file, dest);
+        }
+        return dest;
+    });
+}
+function extractZipWin(file, dest) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        // build the powershell command
+        const escapedFile = file.replace(/'/g, "''").replace(/"|\n|\r/g, ''); // double-up single quotes, remove double quotes and newlines
+        const escapedDest = dest.replace(/'/g, "''").replace(/"|\n|\r/g, '');
+        const pwshPath = yield which('pwsh', false);
+        //To match the file overwrite behavior on nix systems, we use the overwrite = true flag for ExtractToDirectory
+        //and the -Force flag for Expand-Archive as a fallback
+        if (pwshPath) {
+            //attempt to use pwsh with ExtractToDirectory, if this fails attempt Expand-Archive
+            const pwshCommand = [
+                `$ErrorActionPreference = 'Stop' ;`,
+                `try { Add-Type -AssemblyName System.IO.Compression.ZipFile } catch { } ;`,
+                `try { [System.IO.Compression.ZipFile]::ExtractToDirectory('${escapedFile}', '${escapedDest}', $true) }`,
+                `catch { if (($_.Exception.GetType().FullName -eq 'System.Management.Automation.MethodException') -or ($_.Exception.GetType().FullName -eq 'System.Management.Automation.RuntimeException') ){ Expand-Archive -LiteralPath '${escapedFile}' -DestinationPath '${escapedDest}' -Force } else { throw $_ } } ;`
+            ].join(' ');
+            const args = [
+                '-NoLogo',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Unrestricted',
+                '-Command',
+                pwshCommand
+            ];
+            core_debug(`Using pwsh at path: ${pwshPath}`);
+            yield exec_exec(`"${pwshPath}"`, args);
+        }
+        else {
+            const powershellCommand = [
+                `$ErrorActionPreference = 'Stop' ;`,
+                `try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch { } ;`,
+                `if ((Get-Command -Name Expand-Archive -Module Microsoft.PowerShell.Archive -ErrorAction Ignore)) { Expand-Archive -LiteralPath '${escapedFile}' -DestinationPath '${escapedDest}' -Force }`,
+                `else {[System.IO.Compression.ZipFile]::ExtractToDirectory('${escapedFile}', '${escapedDest}', $true) }`
+            ].join(' ');
+            const args = [
+                '-NoLogo',
+                '-Sta',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Unrestricted',
+                '-Command',
+                powershellCommand
+            ];
+            const powershellPath = yield which('powershell', true);
+            core_debug(`Using powershell at path: ${powershellPath}`);
+            yield exec_exec(`"${powershellPath}"`, args);
+        }
+    });
+}
+function extractZipNix(file, dest) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        const unzipPath = yield which('unzip', true);
+        const args = [file];
+        if (!isDebug()) {
+            args.unshift('-q');
+        }
+        args.unshift('-o'); //overwrite with -o, otherwise a prompt is shown which freezes the run
+        yield exec_exec(`"${unzipPath}"`, args, { cwd: dest });
+    });
+}
+/**
+ * Caches a directory and installs it into the tool cacheDir
+ *
+ * @param sourceDir    the directory to cache into tools
+ * @param tool          tool name
+ * @param version       version of the tool.  semver format
+ * @param arch          architecture of the tool.  Optional.  Defaults to machine architecture
+ */
+function cacheDir(sourceDir, tool, version, arch) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        version = node_modules_semver.clean(version) || version;
+        arch = arch || external_os_.arch();
+        core_debug(`Caching tool ${tool} ${version} ${arch}`);
+        core_debug(`source dir: ${sourceDir}`);
+        if (!external_fs_.statSync(sourceDir).isDirectory()) {
+            throw new Error('sourceDir is not a directory');
+        }
+        // Create the tool dir
+        const destPath = yield _createToolPath(tool, version, arch);
+        // copy each child item. do not move. move can fail on Windows
+        // due to anti-virus software having an open handle on a file.
+        for (const itemName of external_fs_.readdirSync(sourceDir)) {
+            const s = external_path_.join(sourceDir, itemName);
+            yield io_cp(s, destPath, { recursive: true });
+        }
+        // write .complete
+        _completeToolPath(tool, version, arch);
+        return destPath;
+    });
+}
+/**
+ * Caches a downloaded file (GUID) and installs it
+ * into the tool cache with a given targetName
+ *
+ * @param sourceFile    the file to cache into tools.  Typically a result of downloadTool which is a guid.
+ * @param targetFile    the name of the file name in the tools directory
+ * @param tool          tool name
+ * @param version       version of the tool.  semver format
+ * @param arch          architecture of the tool.  Optional.  Defaults to machine architecture
+ */
+function cacheFile(sourceFile, targetFile, tool, version, arch) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        version = semver.clean(version) || version;
+        arch = arch || os.arch();
+        core.debug(`Caching tool ${tool} ${version} ${arch}`);
+        core.debug(`source file: ${sourceFile}`);
+        if (!fs.statSync(sourceFile).isFile()) {
+            throw new Error('sourceFile is not a file');
+        }
+        // create the tool dir
+        const destFolder = yield _createToolPath(tool, version, arch);
+        // copy instead of move. move can fail on Windows due to
+        // anti-virus software having an open handle on a file.
+        const destPath = path.join(destFolder, targetFile);
+        core.debug(`destination file ${destPath}`);
+        yield io.cp(sourceFile, destPath);
+        // write .complete
+        _completeToolPath(tool, version, arch);
+        return destFolder;
+    });
+}
+/**
+ * Finds the path to a tool version in the local installed tool cache
+ *
+ * @param toolName      name of the tool
+ * @param versionSpec   version of the tool
+ * @param arch          optional arch.  defaults to arch of computer
+ */
+function find(toolName, versionSpec, arch) {
+    if (!toolName) {
+        throw new Error('toolName parameter is required');
+    }
+    if (!versionSpec) {
+        throw new Error('versionSpec parameter is required');
+    }
+    arch = arch || external_os_.arch();
+    // attempt to resolve an explicit version
+    if (!isExplicitVersion(versionSpec)) {
+        const localVersions = findAllVersions(toolName, arch);
+        const match = evaluateVersions(localVersions, versionSpec);
+        versionSpec = match;
+    }
+    // check for the explicit version in the cache
+    let toolPath = '';
+    if (versionSpec) {
+        versionSpec = node_modules_semver.clean(versionSpec) || '';
+        const cachePath = external_path_.join(_getCacheDirectory(), toolName, versionSpec, arch);
+        core_debug(`checking cache: ${cachePath}`);
+        if (external_fs_.existsSync(cachePath) && external_fs_.existsSync(`${cachePath}.complete`)) {
+            core_debug(`Found tool in cache ${toolName} ${versionSpec} ${arch}`);
+            toolPath = cachePath;
+        }
+        else {
+            core_debug('not found');
+        }
+    }
+    return toolPath;
+}
+/**
+ * Finds the paths to all versions of a tool that are installed in the local tool cache
+ *
+ * @param toolName  name of the tool
+ * @param arch      optional arch.  defaults to arch of computer
+ */
+function findAllVersions(toolName, arch) {
+    const versions = [];
+    arch = arch || external_os_.arch();
+    const toolPath = external_path_.join(_getCacheDirectory(), toolName);
+    if (external_fs_.existsSync(toolPath)) {
+        const children = external_fs_.readdirSync(toolPath);
+        for (const child of children) {
+            if (isExplicitVersion(child)) {
+                const fullPath = external_path_.join(toolPath, child, arch || '');
+                if (external_fs_.existsSync(fullPath) && external_fs_.existsSync(`${fullPath}.complete`)) {
+                    versions.push(child);
+                }
+            }
+        }
+    }
+    return versions;
+}
+function getManifestFromRepo(owner_1, repo_1, auth_1) {
+    return tool_cache_awaiter(this, arguments, void 0, function* (owner, repo, auth, branch = 'master') {
+        let releases = [];
+        const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}`;
+        const http = new httpm.HttpClient('tool-cache');
+        const headers = {};
+        if (auth) {
+            core.debug('set auth');
+            headers.authorization = auth;
+        }
+        const response = yield http.getJson(treeUrl, headers);
+        if (!response.result) {
+            return releases;
+        }
+        let manifestUrl = '';
+        for (const item of response.result.tree) {
+            if (item.path === 'versions-manifest.json') {
+                manifestUrl = item.url;
+                break;
+            }
+        }
+        headers['accept'] = 'application/vnd.github.VERSION.raw';
+        let versionsRaw = yield (yield http.get(manifestUrl, headers)).readBody();
+        if (versionsRaw) {
+            // shouldn't be needed but protects against invalid json saved with BOM
+            versionsRaw = versionsRaw.replace(/^\uFEFF/, '');
+            try {
+                releases = JSON.parse(versionsRaw);
+            }
+            catch (_a) {
+                core.debug('Invalid json');
+            }
+        }
+        return releases;
+    });
+}
+function findFromManifest(versionSpec_1, stable_1, manifest_1) {
+    return tool_cache_awaiter(this, arguments, void 0, function* (versionSpec, stable, manifest, archFilter = os.arch()) {
+        // wrap the internal impl
+        const match = yield mm._findMatch(versionSpec, stable, manifest, archFilter);
+        return match;
+    });
+}
+function _createExtractFolder(dest) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        if (!dest) {
+            // create a temp dir
+            dest = external_path_.join(_getTempDirectory(), external_crypto_.randomUUID());
+        }
+        yield mkdirP(dest);
+        return dest;
+    });
+}
+function _createToolPath(tool, version, arch) {
+    return tool_cache_awaiter(this, void 0, void 0, function* () {
+        const folderPath = external_path_.join(_getCacheDirectory(), tool, node_modules_semver.clean(version) || version, arch || '');
+        core_debug(`destination ${folderPath}`);
+        const markerPath = `${folderPath}.complete`;
+        yield rmRF(folderPath);
+        yield rmRF(markerPath);
+        yield mkdirP(folderPath);
+        return folderPath;
+    });
+}
+function _completeToolPath(tool, version, arch) {
+    const folderPath = external_path_.join(_getCacheDirectory(), tool, node_modules_semver.clean(version) || version, arch || '');
+    const markerPath = `${folderPath}.complete`;
+    external_fs_.writeFileSync(markerPath, '');
+    core_debug('finished caching tool');
+}
+/**
+ * Check if version string is explicit
+ *
+ * @param versionSpec      version string to check
+ */
+function isExplicitVersion(versionSpec) {
+    const c = node_modules_semver.clean(versionSpec) || '';
+    core_debug(`isExplicit: ${c}`);
+    const valid = node_modules_semver.valid(c) != null;
+    core_debug(`explicit? ${valid}`);
+    return valid;
+}
+/**
+ * Get the highest satisfiying semantic version in `versions` which satisfies `versionSpec`
+ *
+ * @param versions        array of versions to evaluate
+ * @param versionSpec     semantic version spec to satisfy
+ */
+function evaluateVersions(versions, versionSpec) {
+    let version = '';
+    core_debug(`evaluating ${versions.length} versions`);
+    versions = versions.sort((a, b) => {
+        if (node_modules_semver.gt(a, b)) {
+            return 1;
+        }
+        return -1;
+    });
+    for (let i = versions.length - 1; i >= 0; i--) {
+        const potential = versions[i];
+        const satisfied = node_modules_semver.satisfies(potential, versionSpec);
+        if (satisfied) {
+            version = potential;
+            break;
+        }
+    }
+    if (version) {
+        core_debug(`matched: ${version}`);
+    }
+    else {
+        core_debug('match not found');
+    }
+    return version;
+}
+/**
+ * Gets RUNNER_TOOL_CACHE
+ */
+function _getCacheDirectory() {
+    const cacheDirectory = process.env['RUNNER_TOOL_CACHE'] || '';
+    (0,external_assert_.ok)(cacheDirectory, 'Expected RUNNER_TOOL_CACHE to be defined');
+    return cacheDirectory;
+}
+/**
+ * Gets RUNNER_TEMP
+ */
+function _getTempDirectory() {
+    const tempDirectory = process.env['RUNNER_TEMP'] || '';
+    (0,external_assert_.ok)(tempDirectory, 'Expected RUNNER_TEMP to be defined');
+    return tempDirectory;
+}
+/**
+ * Gets a global variable
+ */
+function _getGlobal(key, defaultValue) {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const value = global[key];
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    return value !== undefined ? value : defaultValue;
+}
+/**
+ * Returns an array of unique values.
+ * @param values Values to make unique.
+ */
+function _unique(values) {
+    return Array.from(new Set(values));
+}
+//# sourceMappingURL=tool-cache.js.map
+;// CONCATENATED MODULE: ./lib/error-utils.js
+/**
+ * Copyright (c) OpenTofu
+ * Copyright (c) StepSecurity
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * Normalizes errors (including AggregateError from fetch/undici) into
+ * a single, actionable message for GitHub Actions logs.
+ */
+
+/**
+ * Get a user-friendly message from any error.
+ * - AggregateError: flattens error.errors so network/download causes are visible.
+ * - Standard Error: returns message; includes cause if present (Node 16+).
+ *
+ * @param {unknown} error - Caught value (Error, AggregateError, or other).
+ * @returns {string} Single-line message suitable for core.setFailed().
+ */
+function getErrorMessage (error) {
+  if (error instanceof AggregateError && Array.isArray(error.errors)) {
+    if (error.errors.length === 0) {
+      return 'AggregateError (one or more operations failed)';
+    }
+    const parts = error.errors.map((e) => (e && typeof e.message === 'string' ? e.message : String(e)));
+    const combined = parts.join('; ');
+    return combined || 'AggregateError (one or more operations failed)';
+  }
+
+  if (error instanceof Error) {
+    if (error.cause instanceof Error) {
+      return `${error.message}: ${error.cause.message}`;
+    }
+    return error.message;
+  }
+
+  return String(error);
+}
+
+/**
+ * Get a detailed string for logging (e.g. core.debug or core.error).
+ * Includes stack and, for AggregateError, each nested error.
+ *
+ * @param {unknown} error - Caught value.
+ * @returns {string} Multi-line detail string.
+ */
+function getErrorDetail (error) {
+  const lines = [];
+
+  if (error instanceof AggregateError && Array.isArray(error.errors)) {
+    lines.push(`AggregateError (${error.errors.length} error(s)):`);
+    error.errors.forEach((e, i) => {
+      lines.push(`  [${i + 1}] ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof Error && e.stack) {
+        lines.push(e.stack.split('\n').map((l) => '    ' + l).join('\n'));
+      }
+    });
+    if (error.stack) {
+      lines.push('Outer stack:');
+      lines.push(error.stack);
+    }
+    return lines.join('\n');
+  }
+
+  if (error instanceof Error) {
+    lines.push(error.message);
+    if (error.stack) lines.push(error.stack);
+    if (error.cause) {
+      lines.push('Caused by:');
+      lines.push(getErrorDetail(error.cause));
+    }
+    return lines.join('\n');
+  }
+
+  return String(error);
+}
+
+
+
+;// CONCATENATED MODULE: ./lib/releases.js
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * Copyright (c) OpenTofu
+ * Copyright (c) StepSecurity
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
+
+
+
+
+class Build {
+  constructor (version, name) {
+    this.name = name;
+    this.url = `https://github.com/opentofu/opentofu/releases/download/v${version}/${name}`;
+  }
+}
+
+class Release {
+  constructor (releaseMeta) {
+    this.version = releaseMeta.id.replace('v', '');
+    this.builds = releaseMeta.files.map(
+      (asset) => new Build(this.version, asset)
+    );
+  }
+
+  getBuild (platform, arch) {
+    const requiredName = `tofu_${this.version}_${platform}_${arch}.zip`;
+    return this.builds.find((build) => build.name === requiredName);
+  }
+}
+
+/**
+ * Fetches the top 30 releases sorted in desc order.
+ *
+ * @return {Array<Release>} Releases.
+ */
+async function fetchReleases (githubToken) {
+  const userAgent = 'opentofu/setup-opentofu';
+
+  const http = new lib_HttpClient(userAgent);
+
+  const url = 'https://get.opentofu.org/tofu/api.json';
+
+  const headers = {
+    Accept: 'application/json'
+  };
+
+  let resp;
+  try {
+    resp = await http.get(url, headers);
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Failed to fetch OpenTofu releases from ${url}: ${cause}`);
+  }
+
+  if (resp.message.statusCode !== HttpCodes.OK) {
+    throw new Error(
+      'failed fetching releases (' + resp.message.statusCode + ')'
+    );
+  }
+
+  let body;
+  try {
+    body = await resp.readBody();
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Failed to read releases response: ${cause}`);
+  }
+
+  let releasesMeta;
+  try {
+    releasesMeta = JSON.parse(body);
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Invalid releases JSON from ${url}: ${cause}`);
+  }
+
+  /**
+   * @type {Array}
+   */
+  const versions = releasesMeta.versions;
+
+  return versions.map((releaseMeta) => new Release(releaseMeta));
+}
+
+async function findLatestVersion (versions) {
+  return versions
+    .filter((v) => node_modules_semver.prerelease(v) === null)
+    .sort((a, b) => node_modules_semver.rcompare(a, b))[0];
+}
+
+async function findLatestVersionInRange (versions, range) {
+  return node_modules_semver.maxSatisfying(versions, range, {
+    prerelease: true,
+    loose: true
+  });
+}
+
+/**
+ * Fetches the release given the version.
+ *
+ * @param {string} version: Release version.
+ * @param {string} githubToken: GitHub token to use for working around rate limits.
+ * @param {function} fetchReleasesFn: Optional function to fetch releases.
+ * @return {Release} Release.
+ */
+async function getRelease (
+  version,
+  githubToken,
+  fetchReleasesFn = fetchReleases
+) {
+  const latestVersionLabel = 'latest';
+
+  const versionsRange = node_modules_semver.validRange(version, {
+    prerelease: true,
+    loose: true
+  });
+  if (versionsRange === null && version !== latestVersionLabel) {
+    throw new Error(
+      'Input version cannot be used, see semver: https://semver.org/spec/v2.0.0.html'
+    );
+  }
+
+  const releases = await fetchReleasesFn(githubToken);
+
+  if (releases === null || releases.length === 0) {
+    throw new Error('No tofu releases found, please contact OpenTofu');
+  }
+
+  const versionsFound = releases.map((release) => release.version);
+  let versionSelected;
+  if (version === latestVersionLabel) {
+    versionSelected = await findLatestVersion(versionsFound);
+  } else {
+    versionSelected = await findLatestVersionInRange(
+      versionsFound,
+      versionsRange
+    );
+  }
+
+  if (versionSelected === null) {
+    throw new Error('No matching version found');
+  }
+
+  return releases.find((release) => release.version === versionSelected);
+}
+
+
+
+;// CONCATENATED MODULE: ./lib/setup-tofu.js
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * Copyright (c) OpenTofu
+ * Copyright (c) StepSecurity
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
+// Node.js core
+
+
+
+
+
+
+// External
+
+
+
+
+
+
+// __dirname is not available in ES modules, so we need to construct it ourselves
+const setup_tofu_dirname = (0,external_path_.dirname)((0,external_url_.fileURLToPath)(import.meta.url));
+
+// arch in [arm, x32, x64...] (https://nodejs.org/api/os.html#os_os_arch)
+// return value in [amd64, 386, arm]
+function mapArch (arch) {
+  const mappings = {
+    x32: '386',
+    x64: 'amd64'
+  };
+  return mappings[arch] || arch;
+}
+
+// os in [darwin, linux, win32...] (https://nodejs.org/api/os.html#os_os_platform)
+// return value in [darwin, linux, windows]
+function mapOS (os) {
+  if (os === 'win32') {
+    return 'windows';
+  }
+  return os;
+}
+
+async function computeSHA256 (filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = (0,external_crypto_.createHash)('sha256');
+    const stream = (0,external_fs_.createReadStream)(filePath);
+    stream.on('data', (data) => hash.update(data));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
+async function verifyChecksum (zipPath, version, expectedName) {
+  const sumsUrl = `https://github.com/opentofu/opentofu/releases/download/v${version}/tofu_${version}_SHA256SUMS`;
+  core_debug(`Downloading SHA256SUMS from ${sumsUrl}`);
+
+  let sumsPath;
+  try {
+    sumsPath = await downloadTool(sumsUrl);
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Failed to download SHA256SUMS: ${cause}`);
+  }
+
+  const sumsContent = await external_fs_.promises.readFile(sumsPath, 'utf8');
+  const expectedLine = sumsContent
+    .split('\n')
+    .find((line) => line.includes(expectedName));
+
+  if (!expectedLine) {
+    throw new Error(`Checksum entry not found for ${expectedName} in SHA256SUMS`);
+  }
+
+  const expectedHash = expectedLine.split(/\s+/)[0];
+  const actualHash = await computeSHA256(zipPath);
+
+  core_debug(`Expected SHA256: ${expectedHash}`);
+  core_debug(`Actual SHA256:   ${actualHash}`);
+
+  if (actualHash !== expectedHash) {
+    throw new Error(
+      `SHA256 checksum mismatch for ${expectedName}. Expected ${expectedHash}, got ${actualHash}`
+    );
+  }
+
+  core_debug('SHA256 checksum verified successfully');
+}
+
+async function downloadAndExtractCLI (url, version, buildName) {
+  core_debug(`Downloading OpenTofu CLI from ${url}`);
+  let pathToCLIZip;
+  try {
+    pathToCLIZip = await downloadTool(url);
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Failed to download OpenTofu from ${url}: ${cause}`);
+  }
+
+  if (!pathToCLIZip) {
+    throw new Error(`Unable to download OpenTofu from ${url}`);
+  }
+
+  // Verify SHA256 checksum
+  await verifyChecksum(pathToCLIZip, version, buildName);
+
+  let pathToCLI;
+
+  core_debug('Extracting OpenTofu CLI zip file');
+  try {
+    if ((0,external_os_.platform)().startsWith('win')) {
+      core_debug(`OpenTofu CLI Download Path is ${pathToCLIZip}`);
+      const fixedPathToCLIZip = `${pathToCLIZip}.zip`;
+      await mv(pathToCLIZip, fixedPathToCLIZip);
+      core_debug(`Moved download to ${fixedPathToCLIZip}`);
+      pathToCLI = await extractZip(fixedPathToCLIZip);
+    } else {
+      pathToCLI = await extractZip(pathToCLIZip);
+    }
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Failed to extract OpenTofu archive: ${cause}`);
+  }
+
+  core_debug(`OpenTofu CLI path is ${pathToCLI}.`);
+
+  if (!pathToCLI) {
+    throw new Error('Unable to unzip OpenTofu');
+  }
+
+  return pathToCLI;
+}
+
+async function installWrapper (pathToCLI) {
+  let source, target;
+
+  // If we're on Windows, then the executable ends with .exe
+  const exeSuffix = (0,external_os_.platform)().startsWith('win') ? '.exe' : '';
+
+  // Rename tofu(.exe) to tofu-bin(.exe)
+  try {
+    source = [pathToCLI, `tofu${exeSuffix}`].join(external_path_.sep);
+    target = [pathToCLI, `tofu-bin${exeSuffix}`].join(external_path_.sep);
+    core_debug(`Moving ${source} to ${target}.`);
+    await mv(source, target);
+  } catch (e) {
+    core_error(`Unable to move ${source} to ${target}.`);
+    throw e;
+  }
+
+  // Install our wrapper as tofu
+  try {
+    source = __nccwpck_require__.ab + "index1.js";
+    target = [pathToCLI, 'tofu'].join(external_path_.sep);
+    core_debug(`Copying ${source} to ${target}.`);
+    await io_cp(__nccwpck_require__.ab + "index1.js", target);
+  } catch (e) {
+    core_error(`Unable to copy ${source} to ${target}.`);
+    throw e;
+  }
+
+  // Export a new environment variable, so our wrapper can locate the binary
+  exportVariable('TOFU_CLI_PATH', pathToCLI);
+}
+
+// Add credentials to CLI Configuration File
+// https://www.tofu.io/docs/commands/cli-config.html
+async function addCredentials (credentialsHostname, credentialsToken, osPlat) {
+  // format HCL block
+  // eslint-disable
+  const creds = `
+credentials "${credentialsHostname}" {
+  token = "${credentialsToken}"
+}`.trim();
+  // eslint-enable
+
+  // default to OS-specific path
+  let credsFile =
+    osPlat === 'win32'
+      ? `${process.env.APPDATA}/tofu.rc`
+      : `${process.env.HOME}/.tofurc`;
+
+  // override with TF_CLI_CONFIG_FILE environment variable
+  credsFile = process.env.TF_CLI_CONFIG_FILE
+    ? process.env.TF_CLI_CONFIG_FILE
+    : credsFile;
+
+  // get containing folder
+  const credsFolder = (0,external_path_.dirname)(credsFile);
+
+  core_debug(`Creating ${credsFolder}`);
+  await mkdirP(credsFolder);
+
+  core_debug(`Adding credentials to ${credsFile}`);
+  await external_fs_.promises.writeFile(credsFile, creds);
+}
+
+async function run () {
+  try {
+    // Gather GitHub Actions inputs
+    let version = getInput('tofu_version');
+    const versionFile = getInput('tofu_version_file');
+    const credentialsHostname = getInput('cli_config_credentials_hostname');
+    const credentialsToken = getInput('cli_config_credentials_token');
+    const wrapper = getInput('tofu_wrapper') === 'true';
+    const useCache = getInput('cache') === 'true';
+    let githubToken = getInput('github_token');
+    if (
+      githubToken === '' &&
+      !(process.env.FORGEJO_ACTIONS || process.env.GITEA_ACTIONS)
+    ) {
+      // Only default to the environment variable when running in GitHub Actions. Don't do this for other CI systems
+      // that may set the GITHUB_TOKEN environment variable.
+      githubToken = process.env.GITHUB_TOKEN;
+    }
+
+    // If tofu_version_file is provided, read the version from the file
+    if (versionFile) {
+      try {
+        core_debug(`Reading OpenTofu version from file: ${versionFile}`);
+        const fileVersion = await external_fs_.promises.readFile(versionFile, 'utf8');
+        const trimmedVersion = fileVersion.trim();
+        if (trimmedVersion) {
+          version = trimmedVersion;
+          core_debug(`Using version from file: ${version}`);
+        } else {
+          warning(
+            `Version file ${versionFile} is empty, using tofu_version input: ${version}`
+          );
+        }
+      } catch (error) {
+        warning(
+          `Failed to read version from file ${versionFile}: ${error.message}. Using tofu_version input: ${version}`
+        );
+      }
+    }
+
+    // Gather OS details
+    const osPlatform = (0,external_os_.platform)();
+    const osArch = (0,external_os_.arch)();
+
+    core_debug(`Finding releases for OpenTofu version ${version}`);
+    const release = await getRelease(version, githubToken);
+    const buildPlatform = mapOS(osPlatform);
+    const buildArch = mapArch(osArch);
+    const build = release.getBuild(buildPlatform, buildArch);
+    if (!build) {
+      throw new Error(
+        `OpenTofu version ${version} not available for ${buildPlatform} and ${buildArch}`
+      );
+    }
+
+    // Download requested version if not cached
+    let pathToCLI;
+    if (useCache) {
+      const cachedPath = find('tofu', release.version, buildArch);
+      if (cachedPath) {
+        core_debug(`Using cached OpenTofu version ${release.version} from ${cachedPath}`);
+        pathToCLI = cachedPath;
+      } else {
+        core_debug(`OpenTofu version ${release.version} not found in cache, downloading...`);
+        const extractedPath = await downloadAndExtractCLI(build.url, release.version, build.name);
+        core_debug(`Caching OpenTofu version ${release.version} to tool cache`);
+        pathToCLI = await cacheDir(extractedPath, 'tofu', release.version, buildArch);
+      }
+    } else {
+      pathToCLI = await downloadAndExtractCLI(build.url, release.version, build.name);
+    }
+
+    // Install our wrapper
+    if (wrapper) {
+      await installWrapper(pathToCLI);
+    }
+
+    // Add to path
+    addPath(pathToCLI);
+
+    // Add credentials to file if they are provided
+    if (credentialsHostname && credentialsToken) {
+      await addCredentials(credentialsHostname, credentialsToken, osPlatform);
+    }
+    return release;
+  } catch (error) {
+    core_error(getErrorMessage(error));
+    throw error;
+  }
+}
+
+/* harmony default export */ const setup_tofu = (run);
+
 ;// CONCATENATED MODULE: ./node_modules/axios/lib/helpers/bind.js
 
 
@@ -40161,8 +41483,6 @@ class InterceptorManager {
   legacyInterceptorReqResOrdering: true,
 });
 
-// EXTERNAL MODULE: external "url"
-var external_url_ = __nccwpck_require__(7016);
 ;// CONCATENATED MODULE: ./node_modules/axios/lib/platform/node/classes/URLSearchParams.js
 
 
@@ -40823,8 +42143,6 @@ function getEnv(key) {
 
 ;// CONCATENATED MODULE: external "http2"
 const external_http2_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("http2");
-// EXTERNAL MODULE: external "util"
-var external_util_ = __nccwpck_require__(9023);
 // EXTERNAL MODULE: ./node_modules/follow-redirects/index.js
 var follow_redirects = __nccwpck_require__(1573);
 ;// CONCATENATED MODULE: external "zlib"
@@ -40894,8 +42212,6 @@ function fromDataURI(uri, asBlob, options) {
   throw new core_AxiosError('Unsupported protocol ' + protocol, core_AxiosError.ERR_NOT_SUPPORT);
 }
 
-// EXTERNAL MODULE: external "stream"
-var external_stream_ = __nccwpck_require__(2203);
 ;// CONCATENATED MODULE: ./node_modules/axios/lib/helpers/AxiosTransformStream.js
 
 
@@ -45014,1332 +46330,13 @@ axios.default = axios;
 // this module should only have a default export
 /* harmony default export */ const lib_axios = (axios);
 
-// EXTERNAL MODULE: ./node_modules/semver/index.js
-var node_modules_semver = __nccwpck_require__(2088);
-;// CONCATENATED MODULE: ./node_modules/@actions/tool-cache/lib/manifest.js
-var manifest_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
-
-
-
-
-
-// Internal object for testability (allows mocking in ESM)
-const _internal = {
-    readLinuxVersionFile() {
-        const lsbReleaseFile = '/etc/lsb-release';
-        const osReleaseFile = '/etc/os-release';
-        let contents = '';
-        if (external_fs_.existsSync(lsbReleaseFile)) {
-            contents = external_fs_.readFileSync(lsbReleaseFile).toString();
-        }
-        else if (external_fs_.existsSync(osReleaseFile)) {
-            contents = external_fs_.readFileSync(osReleaseFile).toString();
-        }
-        return contents;
-    }
-};
-function _findMatch(versionSpec, stable, candidates, archFilter) {
-    return manifest_awaiter(this, void 0, void 0, function* () {
-        const platFilter = os.platform();
-        let result;
-        let match;
-        let file;
-        for (const candidate of candidates) {
-            const version = candidate.version;
-            debug(`check ${version} satisfies ${versionSpec}`);
-            if (semver.satisfies(version, versionSpec) &&
-                (!stable || candidate.stable === stable)) {
-                file = candidate.files.find(item => {
-                    debug(`${item.arch}===${archFilter} && ${item.platform}===${platFilter}`);
-                    let chk = item.arch === archFilter && item.platform === platFilter;
-                    if (chk && item.platform_version) {
-                        const osVersion = _getOsVersion();
-                        if (osVersion === item.platform_version) {
-                            chk = true;
-                        }
-                        else {
-                            chk = semver.satisfies(osVersion, item.platform_version);
-                        }
-                    }
-                    return chk;
-                });
-                if (file) {
-                    debug(`matched ${candidate.version}`);
-                    match = candidate;
-                    break;
-                }
-            }
-        }
-        if (match && file) {
-            // clone since we're mutating the file list to be only the file that matches
-            result = Object.assign({}, match);
-            result.files = [file];
-        }
-        return result;
-    });
-}
-function _getOsVersion() {
-    // TODO: add windows and other linux, arm variants
-    // right now filtering on version is only an ubuntu and macos scenario for tools we build for hosted (python)
-    const plat = os.platform();
-    let version = '';
-    if (plat === 'darwin') {
-        version = cp.execSync('sw_vers -productVersion').toString();
-    }
-    else if (plat === 'linux') {
-        // lsb_release process not in some containers, readfile
-        // Run cat /etc/lsb-release
-        // DISTRIB_ID=Ubuntu
-        // DISTRIB_RELEASE=18.04
-        // DISTRIB_CODENAME=bionic
-        // DISTRIB_DESCRIPTION="Ubuntu 18.04.4 LTS"
-        const lsbContents = _internal.readLinuxVersionFile();
-        if (lsbContents) {
-            const lines = lsbContents.split('\n');
-            for (const line of lines) {
-                const parts = line.split('=');
-                if (parts.length === 2 &&
-                    (parts[0].trim() === 'VERSION_ID' ||
-                        parts[0].trim() === 'DISTRIB_RELEASE')) {
-                    version = parts[1].trim().replace(/^"/, '').replace(/"$/, '');
-                    break;
-                }
-            }
-        }
-    }
-    return version;
-}
-// Alias for backwards compatibility
-function _readLinuxVersionFile() {
-    return _internal.readLinuxVersionFile();
-}
-//# sourceMappingURL=manifest.js.map
-;// CONCATENATED MODULE: ./node_modules/@actions/tool-cache/lib/retry-helper.js
-var retry_helper_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
-
-/**
- * Internal class for retries
- */
-class RetryHelper {
-    constructor(maxAttempts, minSeconds, maxSeconds) {
-        if (maxAttempts < 1) {
-            throw new Error('max attempts should be greater than or equal to 1');
-        }
-        this.maxAttempts = maxAttempts;
-        this.minSeconds = Math.floor(minSeconds);
-        this.maxSeconds = Math.floor(maxSeconds);
-        if (this.minSeconds > this.maxSeconds) {
-            throw new Error('min seconds should be less than or equal to max seconds');
-        }
-    }
-    execute(action, isRetryable) {
-        return retry_helper_awaiter(this, void 0, void 0, function* () {
-            let attempt = 1;
-            while (attempt < this.maxAttempts) {
-                // Try
-                try {
-                    return yield action();
-                }
-                catch (err) {
-                    if (isRetryable && !isRetryable(err)) {
-                        throw err;
-                    }
-                    info(err.message);
-                }
-                // Sleep
-                const seconds = this.getSleepAmount();
-                info(`Waiting ${seconds} seconds before trying again`);
-                yield this.sleep(seconds);
-                attempt++;
-            }
-            // Last attempt
-            return yield action();
-        });
-    }
-    getSleepAmount() {
-        return (Math.floor(Math.random() * (this.maxSeconds - this.minSeconds + 1)) +
-            this.minSeconds);
-    }
-    sleep(seconds) {
-        return retry_helper_awaiter(this, void 0, void 0, function* () {
-            return new Promise(resolve => setTimeout(resolve, seconds * 1000));
-        });
-    }
-}
-//# sourceMappingURL=retry-helper.js.map
-;// CONCATENATED MODULE: ./node_modules/@actions/tool-cache/lib/tool-cache.js
-var tool_cache_awaiter = (undefined && undefined.__awaiter) || function (thisArg, _arguments, P, generator) {
-    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
-    return new (P || (P = Promise))(function (resolve, reject) {
-        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
-        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
-        step((generator = generator.apply(thisArg, _arguments || [])).next());
-    });
-};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class HTTPError extends Error {
-    constructor(httpStatusCode) {
-        super(`Unexpected HTTP response: ${httpStatusCode}`);
-        this.httpStatusCode = httpStatusCode;
-        Object.setPrototypeOf(this, new.target.prototype);
-    }
-}
-const tool_cache_IS_WINDOWS = process.platform === 'win32';
-const IS_MAC = process.platform === 'darwin';
-const userAgent = 'actions/tool-cache';
-/**
- * Download a tool from an url and stream it into a file
- *
- * @param url       url of tool to download
- * @param dest      path to download tool
- * @param auth      authorization header
- * @param headers   other headers
- * @returns         path to downloaded tool
- */
-function downloadTool(url, dest, auth, headers) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        dest = dest || external_path_.join(_getTempDirectory(), external_crypto_.randomUUID());
-        yield mkdirP(external_path_.dirname(dest));
-        core_debug(`Downloading ${url}`);
-        core_debug(`Destination ${dest}`);
-        const maxAttempts = 3;
-        const minSeconds = _getGlobal('TEST_DOWNLOAD_TOOL_RETRY_MIN_SECONDS', 10);
-        const maxSeconds = _getGlobal('TEST_DOWNLOAD_TOOL_RETRY_MAX_SECONDS', 20);
-        const retryHelper = new RetryHelper(maxAttempts, minSeconds, maxSeconds);
-        return yield retryHelper.execute(() => tool_cache_awaiter(this, void 0, void 0, function* () {
-            return yield downloadToolAttempt(url, dest || '', auth, headers);
-        }), (err) => {
-            if (err instanceof HTTPError && err.httpStatusCode) {
-                // Don't retry anything less than 500, except 408 Request Timeout and 429 Too Many Requests
-                if (err.httpStatusCode < 500 &&
-                    err.httpStatusCode !== 408 &&
-                    err.httpStatusCode !== 429) {
-                    return false;
-                }
-            }
-            // Otherwise retry
-            return true;
-        });
-    });
-}
-function downloadToolAttempt(url, dest, auth, headers) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        if (external_fs_.existsSync(dest)) {
-            throw new Error(`Destination file path ${dest} already exists`);
-        }
-        // Get the response headers
-        const http = new lib_HttpClient(userAgent, [], {
-            allowRetries: false
-        });
-        if (auth) {
-            core_debug('set auth');
-            if (headers === undefined) {
-                headers = {};
-            }
-            headers.authorization = auth;
-        }
-        const response = yield http.get(url, headers);
-        if (response.message.statusCode !== 200) {
-            const err = new HTTPError(response.message.statusCode);
-            core_debug(`Failed to download from "${url}". Code(${response.message.statusCode}) Message(${response.message.statusMessage})`);
-            throw err;
-        }
-        // Download the response body
-        const pipeline = external_util_.promisify(external_stream_.pipeline);
-        const responseMessageFactory = _getGlobal('TEST_DOWNLOAD_TOOL_RESPONSE_MESSAGE_FACTORY', () => response.message);
-        const readStream = responseMessageFactory();
-        let succeeded = false;
-        try {
-            yield pipeline(readStream, external_fs_.createWriteStream(dest));
-            core_debug('download complete');
-            succeeded = true;
-            return dest;
-        }
-        finally {
-            // Error, delete dest before retry
-            if (!succeeded) {
-                core_debug('download failed');
-                try {
-                    yield rmRF(dest);
-                }
-                catch (err) {
-                    core_debug(`Failed to delete '${dest}'. ${err.message}`);
-                }
-            }
-        }
-    });
-}
-/**
- * Extract a .7z file
- *
- * @param file     path to the .7z file
- * @param dest     destination directory. Optional.
- * @param _7zPath  path to 7zr.exe. Optional, for long path support. Most .7z archives do not have this
- * problem. If your .7z archive contains very long paths, you can pass the path to 7zr.exe which will
- * gracefully handle long paths. By default 7zdec.exe is used because it is a very small program and is
- * bundled with the tool lib. However it does not support long paths. 7zr.exe is the reduced command line
- * interface, it is smaller than the full command line interface, and it does support long paths. At the
- * time of this writing, it is freely available from the LZMA SDK that is available on the 7zip website.
- * Be sure to check the current license agreement. If 7zr.exe is bundled with your action, then the path
- * to 7zr.exe can be pass to this function.
- * @returns        path to the destination directory
- */
-function extract7z(file, dest, _7zPath) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        ok(tool_cache_IS_WINDOWS, 'extract7z() not supported on current OS');
-        ok(file, 'parameter "file" is required');
-        dest = yield _createExtractFolder(dest);
-        const originalCwd = process.cwd();
-        process.chdir(dest);
-        if (_7zPath) {
-            try {
-                const logLevel = core.isDebug() ? '-bb1' : '-bb0';
-                const args = [
-                    'x', // eXtract files with full paths
-                    logLevel, // -bb[0-3] : set output log level
-                    '-bd', // disable progress indicator
-                    '-sccUTF-8', // set charset for for console input/output
-                    file
-                ];
-                const options = {
-                    silent: true
-                };
-                yield exec(`"${_7zPath}"`, args, options);
-            }
-            finally {
-                process.chdir(originalCwd);
-            }
-        }
-        else {
-            const escapedScript = path
-                .join(__dirname, '..', 'scripts', 'Invoke-7zdec.ps1')
-                .replace(/'/g, "''")
-                .replace(/"|\n|\r/g, ''); // double-up single quotes, remove double quotes and newlines
-            const escapedFile = file.replace(/'/g, "''").replace(/"|\n|\r/g, '');
-            const escapedTarget = dest.replace(/'/g, "''").replace(/"|\n|\r/g, '');
-            const command = `& '${escapedScript}' -Source '${escapedFile}' -Target '${escapedTarget}'`;
-            const args = [
-                '-NoLogo',
-                '-Sta',
-                '-NoProfile',
-                '-NonInteractive',
-                '-ExecutionPolicy',
-                'Unrestricted',
-                '-Command',
-                command
-            ];
-            const options = {
-                silent: true
-            };
-            try {
-                const powershellPath = yield io.which('powershell', true);
-                yield exec(`"${powershellPath}"`, args, options);
-            }
-            finally {
-                process.chdir(originalCwd);
-            }
-        }
-        return dest;
-    });
-}
-/**
- * Extract a compressed tar archive
- *
- * @param file     path to the tar
- * @param dest     destination directory. Optional.
- * @param flags    flags for the tar command to use for extraction. Defaults to 'xz' (extracting gzipped tars). Optional.
- * @returns        path to the destination directory
- */
-function extractTar(file_1, dest_1) {
-    return tool_cache_awaiter(this, arguments, void 0, function* (file, dest, flags = 'xz') {
-        if (!file) {
-            throw new Error("parameter 'file' is required");
-        }
-        // Create dest
-        dest = yield _createExtractFolder(dest);
-        // Determine whether GNU tar
-        core.debug('Checking tar --version');
-        let versionOutput = '';
-        yield exec('tar --version', [], {
-            ignoreReturnCode: true,
-            silent: true,
-            listeners: {
-                stdout: (data) => (versionOutput += data.toString()),
-                stderr: (data) => (versionOutput += data.toString())
-            }
-        });
-        core.debug(versionOutput.trim());
-        const isGnuTar = versionOutput.toUpperCase().includes('GNU TAR');
-        // Initialize args
-        let args;
-        if (flags instanceof Array) {
-            args = flags;
-        }
-        else {
-            args = [flags];
-        }
-        if (core.isDebug() && !flags.includes('v')) {
-            args.push('-v');
-        }
-        let destArg = dest;
-        let fileArg = file;
-        if (tool_cache_IS_WINDOWS && isGnuTar) {
-            args.push('--force-local');
-            destArg = dest.replace(/\\/g, '/');
-            // Technically only the dest needs to have `/` but for aesthetic consistency
-            // convert slashes in the file arg too.
-            fileArg = file.replace(/\\/g, '/');
-        }
-        if (isGnuTar) {
-            // Suppress warnings when using GNU tar to extract archives created by BSD tar
-            args.push('--warning=no-unknown-keyword');
-            args.push('--overwrite');
-        }
-        args.push('-C', destArg, '-f', fileArg);
-        yield exec(`tar`, args);
-        return dest;
-    });
-}
-/**
- * Extract a xar compatible archive
- *
- * @param file     path to the archive
- * @param dest     destination directory. Optional.
- * @param flags    flags for the xar. Optional.
- * @returns        path to the destination directory
- */
-function extractXar(file_1, dest_1) {
-    return tool_cache_awaiter(this, arguments, void 0, function* (file, dest, flags = []) {
-        ok(IS_MAC, 'extractXar() not supported on current OS');
-        ok(file, 'parameter "file" is required');
-        dest = yield _createExtractFolder(dest);
-        let args;
-        if (flags instanceof Array) {
-            args = flags;
-        }
-        else {
-            args = [flags];
-        }
-        args.push('-x', '-C', dest, '-f', file);
-        if (core.isDebug()) {
-            args.push('-v');
-        }
-        const xarPath = yield io.which('xar', true);
-        yield exec(`"${xarPath}"`, _unique(args));
-        return dest;
-    });
-}
-/**
- * Extract a zip
- *
- * @param file     path to the zip
- * @param dest     destination directory. Optional.
- * @returns        path to the destination directory
- */
-function extractZip(file, dest) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        if (!file) {
-            throw new Error("parameter 'file' is required");
-        }
-        dest = yield _createExtractFolder(dest);
-        if (tool_cache_IS_WINDOWS) {
-            yield extractZipWin(file, dest);
-        }
-        else {
-            yield extractZipNix(file, dest);
-        }
-        return dest;
-    });
-}
-function extractZipWin(file, dest) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        // build the powershell command
-        const escapedFile = file.replace(/'/g, "''").replace(/"|\n|\r/g, ''); // double-up single quotes, remove double quotes and newlines
-        const escapedDest = dest.replace(/'/g, "''").replace(/"|\n|\r/g, '');
-        const pwshPath = yield which('pwsh', false);
-        //To match the file overwrite behavior on nix systems, we use the overwrite = true flag for ExtractToDirectory
-        //and the -Force flag for Expand-Archive as a fallback
-        if (pwshPath) {
-            //attempt to use pwsh with ExtractToDirectory, if this fails attempt Expand-Archive
-            const pwshCommand = [
-                `$ErrorActionPreference = 'Stop' ;`,
-                `try { Add-Type -AssemblyName System.IO.Compression.ZipFile } catch { } ;`,
-                `try { [System.IO.Compression.ZipFile]::ExtractToDirectory('${escapedFile}', '${escapedDest}', $true) }`,
-                `catch { if (($_.Exception.GetType().FullName -eq 'System.Management.Automation.MethodException') -or ($_.Exception.GetType().FullName -eq 'System.Management.Automation.RuntimeException') ){ Expand-Archive -LiteralPath '${escapedFile}' -DestinationPath '${escapedDest}' -Force } else { throw $_ } } ;`
-            ].join(' ');
-            const args = [
-                '-NoLogo',
-                '-NoProfile',
-                '-NonInteractive',
-                '-ExecutionPolicy',
-                'Unrestricted',
-                '-Command',
-                pwshCommand
-            ];
-            core_debug(`Using pwsh at path: ${pwshPath}`);
-            yield exec_exec(`"${pwshPath}"`, args);
-        }
-        else {
-            const powershellCommand = [
-                `$ErrorActionPreference = 'Stop' ;`,
-                `try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch { } ;`,
-                `if ((Get-Command -Name Expand-Archive -Module Microsoft.PowerShell.Archive -ErrorAction Ignore)) { Expand-Archive -LiteralPath '${escapedFile}' -DestinationPath '${escapedDest}' -Force }`,
-                `else {[System.IO.Compression.ZipFile]::ExtractToDirectory('${escapedFile}', '${escapedDest}', $true) }`
-            ].join(' ');
-            const args = [
-                '-NoLogo',
-                '-Sta',
-                '-NoProfile',
-                '-NonInteractive',
-                '-ExecutionPolicy',
-                'Unrestricted',
-                '-Command',
-                powershellCommand
-            ];
-            const powershellPath = yield which('powershell', true);
-            core_debug(`Using powershell at path: ${powershellPath}`);
-            yield exec_exec(`"${powershellPath}"`, args);
-        }
-    });
-}
-function extractZipNix(file, dest) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        const unzipPath = yield which('unzip', true);
-        const args = [file];
-        if (!isDebug()) {
-            args.unshift('-q');
-        }
-        args.unshift('-o'); //overwrite with -o, otherwise a prompt is shown which freezes the run
-        yield exec_exec(`"${unzipPath}"`, args, { cwd: dest });
-    });
-}
-/**
- * Caches a directory and installs it into the tool cacheDir
- *
- * @param sourceDir    the directory to cache into tools
- * @param tool          tool name
- * @param version       version of the tool.  semver format
- * @param arch          architecture of the tool.  Optional.  Defaults to machine architecture
- */
-function cacheDir(sourceDir, tool, version, arch) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        version = node_modules_semver.clean(version) || version;
-        arch = arch || external_os_.arch();
-        core_debug(`Caching tool ${tool} ${version} ${arch}`);
-        core_debug(`source dir: ${sourceDir}`);
-        if (!external_fs_.statSync(sourceDir).isDirectory()) {
-            throw new Error('sourceDir is not a directory');
-        }
-        // Create the tool dir
-        const destPath = yield _createToolPath(tool, version, arch);
-        // copy each child item. do not move. move can fail on Windows
-        // due to anti-virus software having an open handle on a file.
-        for (const itemName of external_fs_.readdirSync(sourceDir)) {
-            const s = external_path_.join(sourceDir, itemName);
-            yield io_cp(s, destPath, { recursive: true });
-        }
-        // write .complete
-        _completeToolPath(tool, version, arch);
-        return destPath;
-    });
-}
-/**
- * Caches a downloaded file (GUID) and installs it
- * into the tool cache with a given targetName
- *
- * @param sourceFile    the file to cache into tools.  Typically a result of downloadTool which is a guid.
- * @param targetFile    the name of the file name in the tools directory
- * @param tool          tool name
- * @param version       version of the tool.  semver format
- * @param arch          architecture of the tool.  Optional.  Defaults to machine architecture
- */
-function cacheFile(sourceFile, targetFile, tool, version, arch) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        version = semver.clean(version) || version;
-        arch = arch || os.arch();
-        core.debug(`Caching tool ${tool} ${version} ${arch}`);
-        core.debug(`source file: ${sourceFile}`);
-        if (!fs.statSync(sourceFile).isFile()) {
-            throw new Error('sourceFile is not a file');
-        }
-        // create the tool dir
-        const destFolder = yield _createToolPath(tool, version, arch);
-        // copy instead of move. move can fail on Windows due to
-        // anti-virus software having an open handle on a file.
-        const destPath = path.join(destFolder, targetFile);
-        core.debug(`destination file ${destPath}`);
-        yield io.cp(sourceFile, destPath);
-        // write .complete
-        _completeToolPath(tool, version, arch);
-        return destFolder;
-    });
-}
-/**
- * Finds the path to a tool version in the local installed tool cache
- *
- * @param toolName      name of the tool
- * @param versionSpec   version of the tool
- * @param arch          optional arch.  defaults to arch of computer
- */
-function find(toolName, versionSpec, arch) {
-    if (!toolName) {
-        throw new Error('toolName parameter is required');
-    }
-    if (!versionSpec) {
-        throw new Error('versionSpec parameter is required');
-    }
-    arch = arch || external_os_.arch();
-    // attempt to resolve an explicit version
-    if (!isExplicitVersion(versionSpec)) {
-        const localVersions = findAllVersions(toolName, arch);
-        const match = evaluateVersions(localVersions, versionSpec);
-        versionSpec = match;
-    }
-    // check for the explicit version in the cache
-    let toolPath = '';
-    if (versionSpec) {
-        versionSpec = node_modules_semver.clean(versionSpec) || '';
-        const cachePath = external_path_.join(_getCacheDirectory(), toolName, versionSpec, arch);
-        core_debug(`checking cache: ${cachePath}`);
-        if (external_fs_.existsSync(cachePath) && external_fs_.existsSync(`${cachePath}.complete`)) {
-            core_debug(`Found tool in cache ${toolName} ${versionSpec} ${arch}`);
-            toolPath = cachePath;
-        }
-        else {
-            core_debug('not found');
-        }
-    }
-    return toolPath;
-}
-/**
- * Finds the paths to all versions of a tool that are installed in the local tool cache
- *
- * @param toolName  name of the tool
- * @param arch      optional arch.  defaults to arch of computer
- */
-function findAllVersions(toolName, arch) {
-    const versions = [];
-    arch = arch || external_os_.arch();
-    const toolPath = external_path_.join(_getCacheDirectory(), toolName);
-    if (external_fs_.existsSync(toolPath)) {
-        const children = external_fs_.readdirSync(toolPath);
-        for (const child of children) {
-            if (isExplicitVersion(child)) {
-                const fullPath = external_path_.join(toolPath, child, arch || '');
-                if (external_fs_.existsSync(fullPath) && external_fs_.existsSync(`${fullPath}.complete`)) {
-                    versions.push(child);
-                }
-            }
-        }
-    }
-    return versions;
-}
-function getManifestFromRepo(owner_1, repo_1, auth_1) {
-    return tool_cache_awaiter(this, arguments, void 0, function* (owner, repo, auth, branch = 'master') {
-        let releases = [];
-        const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}`;
-        const http = new httpm.HttpClient('tool-cache');
-        const headers = {};
-        if (auth) {
-            core.debug('set auth');
-            headers.authorization = auth;
-        }
-        const response = yield http.getJson(treeUrl, headers);
-        if (!response.result) {
-            return releases;
-        }
-        let manifestUrl = '';
-        for (const item of response.result.tree) {
-            if (item.path === 'versions-manifest.json') {
-                manifestUrl = item.url;
-                break;
-            }
-        }
-        headers['accept'] = 'application/vnd.github.VERSION.raw';
-        let versionsRaw = yield (yield http.get(manifestUrl, headers)).readBody();
-        if (versionsRaw) {
-            // shouldn't be needed but protects against invalid json saved with BOM
-            versionsRaw = versionsRaw.replace(/^\uFEFF/, '');
-            try {
-                releases = JSON.parse(versionsRaw);
-            }
-            catch (_a) {
-                core.debug('Invalid json');
-            }
-        }
-        return releases;
-    });
-}
-function findFromManifest(versionSpec_1, stable_1, manifest_1) {
-    return tool_cache_awaiter(this, arguments, void 0, function* (versionSpec, stable, manifest, archFilter = os.arch()) {
-        // wrap the internal impl
-        const match = yield mm._findMatch(versionSpec, stable, manifest, archFilter);
-        return match;
-    });
-}
-function _createExtractFolder(dest) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        if (!dest) {
-            // create a temp dir
-            dest = external_path_.join(_getTempDirectory(), external_crypto_.randomUUID());
-        }
-        yield mkdirP(dest);
-        return dest;
-    });
-}
-function _createToolPath(tool, version, arch) {
-    return tool_cache_awaiter(this, void 0, void 0, function* () {
-        const folderPath = external_path_.join(_getCacheDirectory(), tool, node_modules_semver.clean(version) || version, arch || '');
-        core_debug(`destination ${folderPath}`);
-        const markerPath = `${folderPath}.complete`;
-        yield rmRF(folderPath);
-        yield rmRF(markerPath);
-        yield mkdirP(folderPath);
-        return folderPath;
-    });
-}
-function _completeToolPath(tool, version, arch) {
-    const folderPath = external_path_.join(_getCacheDirectory(), tool, node_modules_semver.clean(version) || version, arch || '');
-    const markerPath = `${folderPath}.complete`;
-    external_fs_.writeFileSync(markerPath, '');
-    core_debug('finished caching tool');
-}
-/**
- * Check if version string is explicit
- *
- * @param versionSpec      version string to check
- */
-function isExplicitVersion(versionSpec) {
-    const c = node_modules_semver.clean(versionSpec) || '';
-    core_debug(`isExplicit: ${c}`);
-    const valid = node_modules_semver.valid(c) != null;
-    core_debug(`explicit? ${valid}`);
-    return valid;
-}
-/**
- * Get the highest satisfiying semantic version in `versions` which satisfies `versionSpec`
- *
- * @param versions        array of versions to evaluate
- * @param versionSpec     semantic version spec to satisfy
- */
-function evaluateVersions(versions, versionSpec) {
-    let version = '';
-    core_debug(`evaluating ${versions.length} versions`);
-    versions = versions.sort((a, b) => {
-        if (node_modules_semver.gt(a, b)) {
-            return 1;
-        }
-        return -1;
-    });
-    for (let i = versions.length - 1; i >= 0; i--) {
-        const potential = versions[i];
-        const satisfied = node_modules_semver.satisfies(potential, versionSpec);
-        if (satisfied) {
-            version = potential;
-            break;
-        }
-    }
-    if (version) {
-        core_debug(`matched: ${version}`);
-    }
-    else {
-        core_debug('match not found');
-    }
-    return version;
-}
-/**
- * Gets RUNNER_TOOL_CACHE
- */
-function _getCacheDirectory() {
-    const cacheDirectory = process.env['RUNNER_TOOL_CACHE'] || '';
-    (0,external_assert_.ok)(cacheDirectory, 'Expected RUNNER_TOOL_CACHE to be defined');
-    return cacheDirectory;
-}
-/**
- * Gets RUNNER_TEMP
- */
-function _getTempDirectory() {
-    const tempDirectory = process.env['RUNNER_TEMP'] || '';
-    (0,external_assert_.ok)(tempDirectory, 'Expected RUNNER_TEMP to be defined');
-    return tempDirectory;
-}
-/**
- * Gets a global variable
- */
-function _getGlobal(key, defaultValue) {
-    /* eslint-disable @typescript-eslint/no-explicit-any */
-    const value = global[key];
-    /* eslint-enable @typescript-eslint/no-explicit-any */
-    return value !== undefined ? value : defaultValue;
-}
-/**
- * Returns an array of unique values.
- * @param values Values to make unique.
- */
-function _unique(values) {
-    return Array.from(new Set(values));
-}
-//# sourceMappingURL=tool-cache.js.map
-;// CONCATENATED MODULE: ./lib/error-utils.js
-/**
- * Copyright (c) OpenTofu
- * Copyright (c) StepSecurity
- * SPDX-License-Identifier: MPL-2.0
- *
- * Normalizes errors (including AggregateError from fetch/undici) into
- * a single, actionable message for GitHub Actions logs.
- */
-
-/**
- * Get a user-friendly message from any error.
- * - AggregateError: flattens error.errors so network/download causes are visible.
- * - Standard Error: returns message; includes cause if present (Node 16+).
- *
- * @param {unknown} error - Caught value (Error, AggregateError, or other).
- * @returns {string} Single-line message suitable for core.setFailed().
- */
-function getErrorMessage (error) {
-  if (error instanceof AggregateError && Array.isArray(error.errors)) {
-    if (error.errors.length === 0) {
-      return 'AggregateError (one or more operations failed)';
-    }
-    const parts = error.errors.map((e) => (e && typeof e.message === 'string' ? e.message : String(e)));
-    const combined = parts.join('; ');
-    return combined || 'AggregateError (one or more operations failed)';
-  }
-
-  if (error instanceof Error) {
-    if (error.cause instanceof Error) {
-      return `${error.message}: ${error.cause.message}`;
-    }
-    return error.message;
-  }
-
-  return String(error);
-}
-
-/**
- * Get a detailed string for logging (e.g. core.debug or core.error).
- * Includes stack and, for AggregateError, each nested error.
- *
- * @param {unknown} error - Caught value.
- * @returns {string} Multi-line detail string.
- */
-function getErrorDetail (error) {
-  const lines = [];
-
-  if (error instanceof AggregateError && Array.isArray(error.errors)) {
-    lines.push(`AggregateError (${error.errors.length} error(s)):`);
-    error.errors.forEach((e, i) => {
-      lines.push(`  [${i + 1}] ${e instanceof Error ? e.message : String(e)}`);
-      if (e instanceof Error && e.stack) {
-        lines.push(e.stack.split('\n').map((l) => '    ' + l).join('\n'));
-      }
-    });
-    if (error.stack) {
-      lines.push('Outer stack:');
-      lines.push(error.stack);
-    }
-    return lines.join('\n');
-  }
-
-  if (error instanceof Error) {
-    lines.push(error.message);
-    if (error.stack) lines.push(error.stack);
-    if (error.cause) {
-      lines.push('Caused by:');
-      lines.push(getErrorDetail(error.cause));
-    }
-    return lines.join('\n');
-  }
-
-  return String(error);
-}
-
-
-
-;// CONCATENATED MODULE: ./lib/releases.js
+;// CONCATENATED MODULE: ./lib/stepsecurity-subscription.js
 /**
  * Copyright (c) HashiCorp, Inc.
  * Copyright (c) OpenTofu
  * Copyright (c) StepSecurity
  * SPDX-License-Identifier: MPL-2.0
  */
-
-
-
-
-
-class Build {
-  constructor (version, name) {
-    this.name = name;
-    this.url = `https://github.com/opentofu/opentofu/releases/download/v${version}/${name}`;
-  }
-}
-
-class Release {
-  constructor (releaseMeta) {
-    this.version = releaseMeta.id.replace('v', '');
-    this.builds = releaseMeta.files.map(
-      (asset) => new Build(this.version, asset)
-    );
-  }
-
-  getBuild (platform, arch) {
-    const requiredName = `tofu_${this.version}_${platform}_${arch}.zip`;
-    return this.builds.find((build) => build.name === requiredName);
-  }
-}
-
-/**
- * Fetches the top 30 releases sorted in desc order.
- *
- * @return {Array<Release>} Releases.
- */
-async function fetchReleases (githubToken) {
-  const userAgent = 'opentofu/setup-opentofu';
-
-  const http = new lib_HttpClient(userAgent);
-
-  const url = 'https://get.opentofu.org/tofu/api.json';
-
-  const headers = {
-    Accept: 'application/json'
-  };
-
-  let resp;
-  try {
-    resp = await http.get(url, headers);
-  } catch (error) {
-    const cause = getErrorMessage(error);
-    throw new Error(`Failed to fetch OpenTofu releases from ${url}: ${cause}`);
-  }
-
-  if (resp.message.statusCode !== HttpCodes.OK) {
-    throw new Error(
-      'failed fetching releases (' + resp.message.statusCode + ')'
-    );
-  }
-
-  let body;
-  try {
-    body = await resp.readBody();
-  } catch (error) {
-    const cause = getErrorMessage(error);
-    throw new Error(`Failed to read releases response: ${cause}`);
-  }
-
-  let releasesMeta;
-  try {
-    releasesMeta = JSON.parse(body);
-  } catch (error) {
-    const cause = getErrorMessage(error);
-    throw new Error(`Invalid releases JSON from ${url}: ${cause}`);
-  }
-
-  /**
-   * @type {Array}
-   */
-  const versions = releasesMeta.versions;
-
-  return versions.map((releaseMeta) => new Release(releaseMeta));
-}
-
-async function findLatestVersion (versions) {
-  return versions
-    .filter((v) => node_modules_semver.prerelease(v) === null)
-    .sort((a, b) => node_modules_semver.rcompare(a, b))[0];
-}
-
-async function findLatestVersionInRange (versions, range) {
-  return node_modules_semver.maxSatisfying(versions, range, {
-    prerelease: true,
-    loose: true
-  });
-}
-
-/**
- * Fetches the release given the version.
- *
- * @param {string} version: Release version.
- * @param {string} githubToken: GitHub token to use for working around rate limits.
- * @param {function} fetchReleasesFn: Optional function to fetch releases.
- * @return {Release} Release.
- */
-async function getRelease (
-  version,
-  githubToken,
-  fetchReleasesFn = fetchReleases
-) {
-  const latestVersionLabel = 'latest';
-
-  const versionsRange = node_modules_semver.validRange(version, {
-    prerelease: true,
-    loose: true
-  });
-  if (versionsRange === null && version !== latestVersionLabel) {
-    throw new Error(
-      'Input version cannot be used, see semver: https://semver.org/spec/v2.0.0.html'
-    );
-  }
-
-  const releases = await fetchReleasesFn(githubToken);
-
-  if (releases === null || releases.length === 0) {
-    throw new Error('No tofu releases found, please contact OpenTofu');
-  }
-
-  const versionsFound = releases.map((release) => release.version);
-  let versionSelected;
-  if (version === latestVersionLabel) {
-    versionSelected = await findLatestVersion(versionsFound);
-  } else {
-    versionSelected = await findLatestVersionInRange(
-      versionsFound,
-      versionsRange
-    );
-  }
-
-  if (versionSelected === null) {
-    throw new Error('No matching version found');
-  }
-
-  return releases.find((release) => release.version === versionSelected);
-}
-
-
-
-;// CONCATENATED MODULE: ./lib/setup-tofu.js
-/**
- * Copyright (c) HashiCorp, Inc.
- * Copyright (c) OpenTofu
- * Copyright (c) StepSecurity
- * SPDX-License-Identifier: MPL-2.0
- */
-
-// Node.js core
-
-
-
-
-
-
-// External
-
-
-
-
-
-
-// __dirname is not available in ES modules, so we need to construct it ourselves
-const setup_tofu_dirname = (0,external_path_.dirname)((0,external_url_.fileURLToPath)(import.meta.url));
-
-// arch in [arm, x32, x64...] (https://nodejs.org/api/os.html#os_os_arch)
-// return value in [amd64, 386, arm]
-function mapArch (arch) {
-  const mappings = {
-    x32: '386',
-    x64: 'amd64'
-  };
-  return mappings[arch] || arch;
-}
-
-// os in [darwin, linux, win32...] (https://nodejs.org/api/os.html#os_os_platform)
-// return value in [darwin, linux, windows]
-function mapOS (os) {
-  if (os === 'win32') {
-    return 'windows';
-  }
-  return os;
-}
-
-async function computeSHA256 (filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = (0,external_crypto_.createHash)('sha256');
-    const stream = (0,external_fs_.createReadStream)(filePath);
-    stream.on('data', (data) => hash.update(data));
-    stream.on('end', () => resolve(hash.digest('hex')));
-    stream.on('error', reject);
-  });
-}
-
-async function verifyChecksum (zipPath, version, expectedName) {
-  const sumsUrl = `https://github.com/opentofu/opentofu/releases/download/v${version}/tofu_${version}_SHA256SUMS`;
-  core_debug(`Downloading SHA256SUMS from ${sumsUrl}`);
-
-  let sumsPath;
-  try {
-    sumsPath = await downloadTool(sumsUrl);
-  } catch (error) {
-    const cause = getErrorMessage(error);
-    throw new Error(`Failed to download SHA256SUMS: ${cause}`);
-  }
-
-  const sumsContent = await external_fs_.promises.readFile(sumsPath, 'utf8');
-  const expectedLine = sumsContent
-    .split('\n')
-    .find((line) => line.includes(expectedName));
-
-  if (!expectedLine) {
-    throw new Error(`Checksum entry not found for ${expectedName} in SHA256SUMS`);
-  }
-
-  const expectedHash = expectedLine.split(/\s+/)[0];
-  const actualHash = await computeSHA256(zipPath);
-
-  core_debug(`Expected SHA256: ${expectedHash}`);
-  core_debug(`Actual SHA256:   ${actualHash}`);
-
-  if (actualHash !== expectedHash) {
-    throw new Error(
-      `SHA256 checksum mismatch for ${expectedName}. Expected ${expectedHash}, got ${actualHash}`
-    );
-  }
-
-  core_debug('SHA256 checksum verified successfully');
-}
-
-async function downloadAndExtractCLI (url, version, buildName) {
-  core_debug(`Downloading OpenTofu CLI from ${url}`);
-  let pathToCLIZip;
-  try {
-    pathToCLIZip = await downloadTool(url);
-  } catch (error) {
-    const cause = getErrorMessage(error);
-    throw new Error(`Failed to download OpenTofu from ${url}: ${cause}`);
-  }
-
-  if (!pathToCLIZip) {
-    throw new Error(`Unable to download OpenTofu from ${url}`);
-  }
-
-  // Verify SHA256 checksum
-  await verifyChecksum(pathToCLIZip, version, buildName);
-
-  let pathToCLI;
-
-  core_debug('Extracting OpenTofu CLI zip file');
-  try {
-    if ((0,external_os_.platform)().startsWith('win')) {
-      core_debug(`OpenTofu CLI Download Path is ${pathToCLIZip}`);
-      const fixedPathToCLIZip = `${pathToCLIZip}.zip`;
-      await mv(pathToCLIZip, fixedPathToCLIZip);
-      core_debug(`Moved download to ${fixedPathToCLIZip}`);
-      pathToCLI = await extractZip(fixedPathToCLIZip);
-    } else {
-      pathToCLI = await extractZip(pathToCLIZip);
-    }
-  } catch (error) {
-    const cause = getErrorMessage(error);
-    throw new Error(`Failed to extract OpenTofu archive: ${cause}`);
-  }
-
-  core_debug(`OpenTofu CLI path is ${pathToCLI}.`);
-
-  if (!pathToCLI) {
-    throw new Error('Unable to unzip OpenTofu');
-  }
-
-  return pathToCLI;
-}
-
-async function installWrapper (pathToCLI) {
-  let source, target;
-
-  // If we're on Windows, then the executable ends with .exe
-  const exeSuffix = (0,external_os_.platform)().startsWith('win') ? '.exe' : '';
-
-  // Rename tofu(.exe) to tofu-bin(.exe)
-  try {
-    source = [pathToCLI, `tofu${exeSuffix}`].join(external_path_.sep);
-    target = [pathToCLI, `tofu-bin${exeSuffix}`].join(external_path_.sep);
-    core_debug(`Moving ${source} to ${target}.`);
-    await mv(source, target);
-  } catch (e) {
-    core_error(`Unable to move ${source} to ${target}.`);
-    throw e;
-  }
-
-  // Install our wrapper as tofu
-  try {
-    source = __nccwpck_require__.ab + "index1.js";
-    target = [pathToCLI, 'tofu'].join(external_path_.sep);
-    core_debug(`Copying ${source} to ${target}.`);
-    await io_cp(__nccwpck_require__.ab + "index1.js", target);
-  } catch (e) {
-    core_error(`Unable to copy ${source} to ${target}.`);
-    throw e;
-  }
-
-  // Export a new environment variable, so our wrapper can locate the binary
-  exportVariable('TOFU_CLI_PATH', pathToCLI);
-}
-
-// Add credentials to CLI Configuration File
-// https://www.tofu.io/docs/commands/cli-config.html
-async function addCredentials (credentialsHostname, credentialsToken, osPlat) {
-  // format HCL block
-  // eslint-disable
-  const creds = `
-credentials "${credentialsHostname}" {
-  token = "${credentialsToken}"
-}`.trim();
-  // eslint-enable
-
-  // default to OS-specific path
-  let credsFile =
-    osPlat === 'win32'
-      ? `${process.env.APPDATA}/tofu.rc`
-      : `${process.env.HOME}/.tofurc`;
-
-  // override with TF_CLI_CONFIG_FILE environment variable
-  credsFile = process.env.TF_CLI_CONFIG_FILE
-    ? process.env.TF_CLI_CONFIG_FILE
-    : credsFile;
-
-  // get containing folder
-  const credsFolder = (0,external_path_.dirname)(credsFile);
-
-  core_debug(`Creating ${credsFolder}`);
-  await mkdirP(credsFolder);
-
-  core_debug(`Adding credentials to ${credsFile}`);
-  await external_fs_.promises.writeFile(credsFile, creds);
-}
-
-async function run () {
-  try {
-    // Gather GitHub Actions inputs
-    let version = getInput('tofu_version');
-    const versionFile = getInput('tofu_version_file');
-    const credentialsHostname = getInput('cli_config_credentials_hostname');
-    const credentialsToken = getInput('cli_config_credentials_token');
-    const wrapper = getInput('tofu_wrapper') === 'true';
-    const useCache = getInput('cache') === 'true';
-    let githubToken = getInput('github_token');
-    if (
-      githubToken === '' &&
-      !(process.env.FORGEJO_ACTIONS || process.env.GITEA_ACTIONS)
-    ) {
-      // Only default to the environment variable when running in GitHub Actions. Don't do this for other CI systems
-      // that may set the GITHUB_TOKEN environment variable.
-      githubToken = process.env.GITHUB_TOKEN;
-    }
-
-    // If tofu_version_file is provided, read the version from the file
-    if (versionFile) {
-      try {
-        core_debug(`Reading OpenTofu version from file: ${versionFile}`);
-        const fileVersion = await external_fs_.promises.readFile(versionFile, 'utf8');
-        const trimmedVersion = fileVersion.trim();
-        if (trimmedVersion) {
-          version = trimmedVersion;
-          core_debug(`Using version from file: ${version}`);
-        } else {
-          warning(
-            `Version file ${versionFile} is empty, using tofu_version input: ${version}`
-          );
-        }
-      } catch (error) {
-        warning(
-          `Failed to read version from file ${versionFile}: ${error.message}. Using tofu_version input: ${version}`
-        );
-      }
-    }
-
-    // Gather OS details
-    const osPlatform = (0,external_os_.platform)();
-    const osArch = (0,external_os_.arch)();
-
-    core_debug(`Finding releases for OpenTofu version ${version}`);
-    const release = await getRelease(version, githubToken);
-    const buildPlatform = mapOS(osPlatform);
-    const buildArch = mapArch(osArch);
-    const build = release.getBuild(buildPlatform, buildArch);
-    if (!build) {
-      throw new Error(
-        `OpenTofu version ${version} not available for ${buildPlatform} and ${buildArch}`
-      );
-    }
-
-    // Download requested version if not cached
-    let pathToCLI;
-    if (useCache) {
-      const cachedPath = find('tofu', release.version, buildArch);
-      if (cachedPath) {
-        core_debug(`Using cached OpenTofu version ${release.version} from ${cachedPath}`);
-        pathToCLI = cachedPath;
-      } else {
-        core_debug(`OpenTofu version ${release.version} not found in cache, downloading...`);
-        const extractedPath = await downloadAndExtractCLI(build.url, release.version, build.name);
-        core_debug(`Caching OpenTofu version ${release.version} to tool cache`);
-        pathToCLI = await cacheDir(extractedPath, 'tofu', release.version, buildArch);
-      }
-    } else {
-      pathToCLI = await downloadAndExtractCLI(build.url, release.version, build.name);
-    }
-
-    // Install our wrapper
-    if (wrapper) {
-      await installWrapper(pathToCLI);
-    }
-
-    // Add to path
-    addPath(pathToCLI);
-
-    // Add credentials to file if they are provided
-    if (credentialsHostname && credentialsToken) {
-      await addCredentials(credentialsHostname, credentialsToken, osPlatform);
-    }
-    return release;
-  } catch (error) {
-    core_error(getErrorMessage(error));
-    throw error;
-  }
-}
-
-/* harmony default export */ const setup_tofu = (run);
-
-;// CONCATENATED MODULE: ./index.js
-/**
- * Copyright (c) HashiCorp, Inc.
- * Copyright (c) OpenTofu
- * Copyright (c) StepSecurity
- * SPDX-License-Identifier: MPL-2.0
- */
-
-
-
 
 
 
@@ -46380,6 +46377,20 @@ async function validateSubscription () {
     info('Timeout or API not reachable. Continuing to next step.');
   }
 }
+
+;// CONCATENATED MODULE: ./index.js
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * Copyright (c) OpenTofu
+ * Copyright (c) StepSecurity
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
+
+
+
+
+
 
 (async () => {
   try {
