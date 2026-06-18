@@ -75,6 +75,30 @@ steps:
     cache: true
 ```
 
+Provider acceptance test environment variables can be configured automatically by setting `provider_acceptance_tests` to `true`. This exports `TF_ACC`, `TF_ACC_PROVIDER_NAMESPACE`, `TF_ACC_PROVIDER_HOST`, and `TF_ACC_TERRAFORM_PATH` so you don't need to set them manually:
+
+```yaml
+steps:
+- uses: opentofu/setup-opentofu@v2
+  with:
+    tofu_wrapper: false
+    provider_acceptance_tests: true
+- run: go mod download
+- run: go test -v -cover ./...
+  timeout-minutes: 10
+```
+
+Validation can be enabled to check the downloaded OpenTofu CLI SHA256 hash against a newline-delimited list of checksums:
+
+```yaml
+steps:
+- uses: opentofu/setup-opentofu@v2
+  with:
+    checksums: |
+    933b060ab1cf05b106e94af1d370fd14b3006a6845495a67c68734269cc705ad
+    d3d29f51e75a701fc7cf67c0644a8c883a85f36cf1621461988baffd88e7f361
+```
+
 Subsequent steps can access outputs when the wrapper script is installed:
 
 ```yaml
@@ -273,7 +297,12 @@ The action supports the following inputs:
   the `tofu` binary and expose its STDOUT, STDERR, and exit code as outputs
   named `stdout`, `stderr`, and `exitcode` respectively. Defaults to `true`.
 - `cache` - (optional) Whether to use GitHub Actions tool-cache to store and reuse downloaded OpenTofu binaries. Defaults to `false`.
+- `provider_acceptance_tests` - (optional) Whether to automatically set environment variables for running
+  OpenTofu provider acceptance tests. When set to `true`, the following environment variables are exported:
+  `TF_ACC=1`, `TF_ACC_PROVIDER_NAMESPACE=hashicorp`, `TF_ACC_PROVIDER_HOST=registry.opentofu.org`, and
+  `TF_ACC_TERRAFORM_PATH=<path to tofu binary>`. Defaults to `false`.
 - `github_token` - (optional) Override the GitHub token read from the environment variable. Defaults to the value of the `GITHUB_TOKEN` environment variable unless running on Forgejo or Gitea.
+- `checksums` - (optional) A newline-delimited list of valid checksums (SHA256) for the downloaded OpenTofu CLI ZIP. When set, the action will verify the ZIP matches one of the checksums before proceeding. Defaults to `[]`
 
 ## Outputs
 
@@ -287,4 +316,3 @@ to `true`, the following outputs are available for subsequent steps that call th
 ## License
 
 [Mozilla Public License v2.0](LICENSE)
-

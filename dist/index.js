@@ -2634,6 +2634,18 @@ var hasOwn = __nccwpck_require__(4076);
 var populate = __nccwpck_require__(1835);
 
 /**
+ * Escape CR, LF, and `"` in a multipart `name`/`filename` parameter, so a field
+ * name or filename can not break out of its header line to inject headers or
+ * smuggle additional parts. Matches the WHATWG HTML multipart/form-data encoding.
+ *
+ * @param {string} str - the parameter value to escape
+ * @returns {string} the escaped value
+ */
+function escapeHeaderParam(str) {
+  return String(str).replace(/\r/g, '%0D').replace(/\n/g, '%0A').replace(/"/g, '%22');
+}
+
+/**
  * Create readable "multipart/form-data" streams.
  * Can be used to submit forms
  * and file uploads to other web applications.
@@ -2798,7 +2810,7 @@ FormData.prototype._multiPartHeader = function (field, value, options) {
   var contents = '';
   var headers = {
     // add custom disposition as third element or keep it two elements if not
-    'Content-Disposition': ['form-data', 'name="' + field + '"'].concat(contentDisposition || []),
+    'Content-Disposition': ['form-data', 'name="' + escapeHeaderParam(field) + '"'].concat(contentDisposition || []),
     // if no content type. allow it to be empty array
     'Content-Type': [].concat(contentType || [])
   };
@@ -2852,7 +2864,7 @@ FormData.prototype._getContentDisposition = function (value, options) { // eslin
   }
 
   if (filename) {
-    return 'filename="' + filename + '"';
+    return 'filename="' + escapeHeaderParam(filename) + '"';
   }
 };
 
@@ -46039,6 +46051,27 @@ async function getRelease (
 
 
 
+;// CONCATENATED MODULE: external "stream/promises"
+const promises_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("stream/promises");
+;// CONCATENATED MODULE: ./lib/util.js
+/**
+ * Copyright (c) OpenTofu
+ * Copyright (c) StepSecurity
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
+
+
+
+
+async function fileSHA256 (filePath) {
+  const hash = (0,external_crypto_.createHash)('sha256');
+  const fileStream = (0,external_fs_.createReadStream)(filePath);
+
+  await (0,promises_namespaceObject.pipeline)(fileStream, hash);
+  return hash.digest('hex');
+}
+
 ;// CONCATENATED MODULE: ./lib/setup-tofu.js
 /**
  * Copyright (c) HashiCorp, Inc.
@@ -46055,6 +46088,7 @@ async function getRelease (
 
 
 // External
+
 
 
 
@@ -46129,7 +46163,7 @@ async function verifyChecksum (zipPath, version, expectedName) {
   core_debug('SHA256 checksum verified successfully');
 }
 
-async function downloadAndExtractCLI (url, version, buildName) {
+async function downloadAndExtractCLI (url, version, buildName, checksums) {
   core_debug(`Downloading OpenTofu CLI from ${url}`);
   let pathToCLIZip;
   try {
@@ -46137,6 +46171,20 @@ async function downloadAndExtractCLI (url, version, buildName) {
   } catch (error) {
     const cause = getErrorMessage(error);
     throw new Error(`Failed to download OpenTofu from ${url}: ${cause}`);
+  }
+
+  if (checksums.length > 0) {
+    let checksum;
+    try {
+      checksum = await fileSHA256(pathToCLIZip);
+    } catch (error) {
+      const cause = getErrorMessage(error);
+      throw new Error(`Failed to calculate the checksum for the OpenTofu CLI zip: ${cause}`);
+    }
+
+    if (!checksums.includes(checksum)) {
+      throw new Error(`Failed to validate OpenTofu CLI zip checksum. Received: ${checksum}. Valid checksums: ${checksums.join(', ')}`);
+    }
   }
 
   if (!pathToCLIZip) {
@@ -46245,7 +46293,9 @@ async function run () {
     const credentialsHostname = getInput('cli_config_credentials_hostname');
     const credentialsToken = getInput('cli_config_credentials_token');
     const wrapper = getInput('tofu_wrapper') === 'true';
+    const providerAcceptanceTest = getInput('provider_acceptance_tests') === 'true';
     const useCache = getInput('cache') === 'true';
+    const checksums = getMultilineInput('checksums');
     let githubToken = getInput('github_token');
     if (
       githubToken === '' &&
@@ -46301,12 +46351,12 @@ async function run () {
         pathToCLI = cachedPath;
       } else {
         core_debug(`OpenTofu version ${release.version} not found in cache, downloading...`);
-        const extractedPath = await downloadAndExtractCLI(build.url, release.version, build.name);
+        const extractedPath = await downloadAndExtractCLI(build.url, release.version, build.name, checksums);
         core_debug(`Caching OpenTofu version ${release.version} to tool cache`);
         pathToCLI = await cacheDir(extractedPath, 'tofu', release.version, buildArch);
       }
     } else {
-      pathToCLI = await downloadAndExtractCLI(build.url, release.version, build.name);
+      pathToCLI = await downloadAndExtractCLI(build.url, release.version, build.name, checksums);
     }
 
     // Install our wrapper
@@ -46316,6 +46366,16 @@ async function run () {
 
     // Add to path
     addPath(pathToCLI);
+
+    // Set up provider acceptance test environment variables
+    if (providerAcceptanceTest) {
+      const exeSuffix = (0,external_os_.platform)().startsWith('win') ? '.exe' : '';
+      const binaryName = wrapper ? `tofu-bin${exeSuffix}` : `tofu${exeSuffix}`;
+      exportVariable('TF_ACC', '1');
+      exportVariable('TF_ACC_PROVIDER_NAMESPACE', 'hashicorp');
+      exportVariable('TF_ACC_PROVIDER_HOST', 'registry.opentofu.org');
+      exportVariable('TF_ACC_TERRAFORM_PATH', (0,external_path_.join)(pathToCLI, binaryName));
+    }
 
     // Add credentials to file if they are provided
     if (credentialsHostname && credentialsToken) {
