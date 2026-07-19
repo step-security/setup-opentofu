@@ -35656,7 +35656,7 @@ var __awaiter = (undefined && undefined.__awaiter) || function (thisArg, _argume
 
 
 
-var HttpCodes;
+var lib_HttpCodes;
 (function (HttpCodes) {
     HttpCodes[HttpCodes["OK"] = 200] = "OK";
     HttpCodes[HttpCodes["MultipleChoices"] = 300] = "MultipleChoices";
@@ -35685,7 +35685,7 @@ var HttpCodes;
     HttpCodes[HttpCodes["BadGateway"] = 502] = "BadGateway";
     HttpCodes[HttpCodes["ServiceUnavailable"] = 503] = "ServiceUnavailable";
     HttpCodes[HttpCodes["GatewayTimeout"] = 504] = "GatewayTimeout";
-})(HttpCodes || (HttpCodes = {}));
+})(lib_HttpCodes || (lib_HttpCodes = {}));
 var Headers;
 (function (Headers) {
     Headers["Accept"] = "accept";
@@ -35704,16 +35704,16 @@ function lib_getProxyUrl(serverUrl) {
     return proxyUrl ? proxyUrl.href : '';
 }
 const HttpRedirectCodes = [
-    HttpCodes.MovedPermanently,
-    HttpCodes.ResourceMoved,
-    HttpCodes.SeeOther,
-    HttpCodes.TemporaryRedirect,
-    HttpCodes.PermanentRedirect
+    lib_HttpCodes.MovedPermanently,
+    lib_HttpCodes.ResourceMoved,
+    lib_HttpCodes.SeeOther,
+    lib_HttpCodes.TemporaryRedirect,
+    lib_HttpCodes.PermanentRedirect
 ];
 const HttpResponseRetryCodes = [
-    HttpCodes.BadGateway,
-    HttpCodes.ServiceUnavailable,
-    HttpCodes.GatewayTimeout
+    lib_HttpCodes.BadGateway,
+    lib_HttpCodes.ServiceUnavailable,
+    lib_HttpCodes.GatewayTimeout
 ];
 const RetryableHttpVerbs = ['OPTIONS', 'GET', 'DELETE', 'HEAD'];
 const ExponentialBackoffCeiling = 10;
@@ -35903,7 +35903,7 @@ class lib_HttpClient {
                 // Check if it's an authentication challenge
                 if (response &&
                     response.message &&
-                    response.message.statusCode === HttpCodes.Unauthorized) {
+                    response.message.statusCode === lib_HttpCodes.Unauthorized) {
                     let authenticationHandler;
                     for (const handler of this.handlers) {
                         if (handler.canHandleAuthentication(response)) {
@@ -36279,7 +36279,7 @@ class lib_HttpClient {
                     headers: {}
                 };
                 // not found leads to null obj returned
-                if (statusCode === HttpCodes.NotFound) {
+                if (statusCode === lib_HttpCodes.NotFound) {
                     resolve(response);
                 }
                 // get the result from the body
@@ -46035,7 +46035,7 @@ function _unique(values) {
  * @param {unknown} error - Caught value (Error, AggregateError, or other).
  * @returns {string} Single-line message suitable for core.setFailed().
  */
-function getErrorMessage (error) {
+function error_utils_getErrorMessage (error) {
   if (error instanceof AggregateError && Array.isArray(error.errors)) {
     if (error.errors.length === 0) {
       return 'AggregateError (one or more operations failed)';
@@ -46148,11 +46148,11 @@ async function fetchReleases (githubToken) {
   try {
     resp = await http.get(url, headers);
   } catch (error) {
-    const cause = getErrorMessage(error);
+    const cause = error_utils_getErrorMessage(error);
     throw new Error(`Failed to fetch OpenTofu releases from ${url}: ${cause}`);
   }
 
-  if (resp.message.statusCode !== HttpCodes.OK) {
+  if (resp.message.statusCode !== lib_HttpCodes.OK) {
     throw new Error(
       'failed fetching releases (' + resp.message.statusCode + ')'
     );
@@ -46162,7 +46162,7 @@ async function fetchReleases (githubToken) {
   try {
     body = await resp.readBody();
   } catch (error) {
-    const cause = getErrorMessage(error);
+    const cause = error_utils_getErrorMessage(error);
     throw new Error(`Failed to read releases response: ${cause}`);
   }
 
@@ -46170,7 +46170,7 @@ async function fetchReleases (githubToken) {
   try {
     releasesMeta = JSON.parse(body);
   } catch (error) {
-    const cause = getErrorMessage(error);
+    const cause = error_utils_getErrorMessage(error);
     throw new Error(`Invalid releases JSON from ${url}: ${cause}`);
   }
 
@@ -46180,6 +46180,86 @@ async function fetchReleases (githubToken) {
   const versions = releasesMeta.versions;
 
   return versions.map((releaseMeta) => new Release(releaseMeta));
+}
+
+/**
+ * Fetches the raw SHA256SUMS file published alongside an OpenTofu release.
+ *
+ * @param {string} version: Release version (without the leading `v`).
+ * @return {string} Raw SHA256SUMS file body.
+ */
+async function fetchSHA256SUMS (version) {
+  const userAgent = 'opentofu/setup-opentofu';
+
+  const http = new HttpClient(userAgent);
+
+  const url = `https://github.com/opentofu/opentofu/releases/download/v${version}/tofu_${version}_SHA256SUMS`;
+
+  let resp;
+  try {
+    resp = await http.get(url);
+  } catch (error) {
+    const cause = getErrorMessage(error);
+    throw new Error(`Failed to fetch SHA256SUMS from ${url}: ${cause}`);
+  }
+
+  if (resp.message.statusCode !== HttpCodes.OK) {
+    throw new Error(
+      `failed fetching SHA256SUMS for ${url} (${resp.message.statusCode})`
+    );
+  }
+
+  return resp.readBody();
+}
+
+/**
+ * Parses a SHA256SUMS file body and returns the checksum for a given file name.
+ *
+ * Each line follows the `sha256sum` format: a lowercase hex digest, whitespace,
+ * then the file name (binary-mode lines prefix the name with `*`).
+ *
+ * @param {string} body: Raw SHA256SUMS file body.
+ * @param {string} fileName: Asset file name to look up.
+ * @return {string|null} Lowercase hex SHA-256 checksum, or null when not found.
+ */
+function parseChecksum (body, fileName) {
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') {
+      continue;
+    }
+
+    const separatorIndex = trimmed.search(/\s/);
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const checksum = trimmed.slice(0, separatorIndex);
+    const name = trimmed.slice(separatorIndex).trim().replace(/^\*/, '');
+    if (name === fileName) {
+      return checksum.toLowerCase();
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves the published SHA-256 checksum for a release asset by fetching the
+ * release's SHA256SUMS file and looking up the asset's file name.
+ *
+ * @param {string} version: Release version (without the leading `v`).
+ * @param {string} fileName: Asset file name to look up.
+ * @param {function} fetchSumsFn: Optional fetcher for the SHA256SUMS body (for testing).
+ * @return {string|null} Lowercase hex SHA-256 checksum, or null when not found.
+ */
+async function getDownloadChecksum (
+  version,
+  fileName,
+  fetchSumsFn = fetchSHA256SUMS
+) {
+  const body = await fetchSumsFn(version);
+  return parseChecksum(body, fileName);
 }
 
 async function findLatestVersion (versions) {
@@ -46330,7 +46410,7 @@ async function verifyChecksum (zipPath, version, expectedName) {
   try {
     sumsPath = await downloadTool(sumsUrl);
   } catch (error) {
-    const cause = getErrorMessage(error);
+    const cause = error_utils_getErrorMessage(error);
     throw new Error(`Failed to download SHA256SUMS: ${cause}`);
   }
 
@@ -46364,7 +46444,7 @@ async function downloadAndExtractCLI (url, version, buildName, checksums) {
   try {
     pathToCLIZip = await downloadTool(url);
   } catch (error) {
-    const cause = getErrorMessage(error);
+    const cause = error_utils_getErrorMessage(error);
     throw new Error(`Failed to download OpenTofu from ${url}: ${cause}`);
   }
 
@@ -46373,7 +46453,7 @@ async function downloadAndExtractCLI (url, version, buildName, checksums) {
     try {
       checksum = await fileSHA256(pathToCLIZip);
     } catch (error) {
-      const cause = getErrorMessage(error);
+      const cause = error_utils_getErrorMessage(error);
       throw new Error(`Failed to calculate the checksum for the OpenTofu CLI zip: ${cause}`);
     }
 
@@ -46403,7 +46483,7 @@ async function downloadAndExtractCLI (url, version, buildName, checksums) {
       pathToCLI = await extractZip(pathToCLIZip);
     }
   } catch (error) {
-    const cause = getErrorMessage(error);
+    const cause = error_utils_getErrorMessage(error);
     throw new Error(`Failed to extract OpenTofu archive: ${cause}`);
   }
 
@@ -46578,7 +46658,7 @@ async function run () {
     }
     return release;
   } catch (error) {
-    core_error(getErrorMessage(error));
+    core_error(error_utils_getErrorMessage(error));
     throw error;
   }
 }
@@ -46641,7 +46721,7 @@ async function validateSubscription () {
     await validateSubscription();
     await setup_tofu();
   } catch (error) {
-    const message = getErrorMessage(error);
+    const message = error_utils_getErrorMessage(error);
     core_debug(getErrorDetail(error));
     setFailed(message);
   }
