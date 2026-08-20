@@ -1,6 +1,6 @@
 {
 	"name": "setup-opentofu",
-	"version": "2.0.0",
+	"version": "2.0.2",
 	"description": "Setup OpenTofu CLI for GitHub Actions",
 	"type": "module",
 	"license": "MPL-2.0",
@@ -19,17 +19,17 @@
 	"keywords": [],
 	"author": "step-security",
 	"dependencies": {
-		"@actions/core": "^3.0.0",
+		"@actions/core": "^3.0.1",
 		"@actions/exec": "^3.0.0",
 		"@actions/http-client": "^4.0.1",
 		"@actions/io": "^3.0.2",
 		"@actions/tool-cache": "^4.0.0",
 		"axios": "^1.13.6",
-		"semver": "^7.7.4"
+		"semver": "^7.8.3"
 	},
 	"devDependencies": {
 		"@vercel/ncc": "0.38.4",
-		"jest": "^30.3.0",
+		"jest": "^30.4.2",
 		"semistandard": "17.0.0"
 	},
 	"semistandard": {
