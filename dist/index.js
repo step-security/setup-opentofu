@@ -48167,7 +48167,7 @@ class Release {
  * @return {Array<Release>} Releases.
  */
 async function fetchReleases (githubToken) {
-  const userAgent = 'step-security/opentofu';
+  const userAgent = 'step-security/setup-opentofu';
 
   const http = new lib_HttpClient(userAgent);
 
@@ -48222,7 +48222,7 @@ async function fetchReleases (githubToken) {
  * @return {string} Raw SHA256SUMS file body.
  */
 async function fetchSHA256SUMS (version) {
-  const userAgent = 'step-security/opentofu';
+  const userAgent = 'step-security/setup-opentofu';
 
   const http = new lib_HttpClient(userAgent);
 
