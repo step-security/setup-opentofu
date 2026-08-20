@@ -5081,6 +5081,9 @@ class Range {
   }
 
   parseRange (range) {
+    // strip build metadata so it can't bleed into the version
+    range = range.replace(BUILDSTRIPRE, '')
+
     // memoize range parsing for performance.
     // this is a very hot path, and fully deterministic.
     const memoOpts =
@@ -5206,12 +5209,16 @@ const debug = __nccwpck_require__(1159)
 const SemVer = __nccwpck_require__(7163)
 const {
   safeRe: re,
+  src,
   t,
   comparatorTrimReplace,
   tildeTrimReplace,
   caretTrimReplace,
 } = __nccwpck_require__(5471)
 const { FLAG_INCLUDE_PRERELEASE, FLAG_LOOSE } = __nccwpck_require__(5101)
+
+// unbounded global build-metadata stripper used by parseRange
+const BUILDSTRIPRE = new RegExp(src[t.BUILD], 'g')
 
 const isNullSet = c => c.value === '<0.0.0-0'
 const isAny = c => c.value === ''
@@ -5253,6 +5260,11 @@ const parseComparator = (comp, options) => {
 
 const isX = id => !id || id.toLowerCase() === 'x' || id === '*'
 
+const invalidXRangeOrder = (M, m, p) => (
+  (isX(M) && !isX(m)) ||
+  (isX(m) && p && !isX(p))
+)
+
 // ~, ~> --> * (any, kinda silly)
 // ~2, ~2.x, ~2.x.x, ~>2, ~>2.x ~>2.x.x --> >=2.0.0 <3.0.0-0
 // ~2.0, ~2.0.x, ~>2.0, ~>2.0.x --> >=2.0.0 <2.1.0-0
@@ -5270,6 +5282,10 @@ const replaceTildes = (comp, options) => {
 
 const replaceTilde = (comp, options) => {
   const r = options.loose ? re[t.TILDELOOSE] : re[t.TILDE]
+  // if we're including prereleases in the match, then the lower bound is
+  // -0, the lowest possible prerelease value, just like x-ranges and carets.
+  // this keeps `~1.2` equivalent to the `1.2.x` x-range it's documented as.
+  const z = options.includePrerelease ? '-0' : ''
   return comp.replace(r, (_, M, m, p, pr) => {
     debug('tilde', comp, _, M, m, p, pr)
     let ret
@@ -5277,10 +5293,10 @@ const replaceTilde = (comp, options) => {
     if (isX(M)) {
       ret = ''
     } else if (isX(m)) {
-      ret = `>=${M}.0.0 <${+M + 1}.0.0-0`
+      ret = `>=${M}.0.0${z} <${+M + 1}.0.0-0`
     } else if (isX(p)) {
       // ~1.2 == >=1.2.0 <1.3.0-0
-      ret = `>=${M}.${m}.0 <${M}.${+m + 1}.0-0`
+      ret = `>=${M}.${m}.0${z} <${M}.${+m + 1}.0-0`
     } else if (pr) {
       debug('replaceTilde pr', pr)
       ret = `>=${M}.${m}.${p}-${pr
@@ -5349,10 +5365,10 @@ const replaceCaret = (comp, options) => {
       if (M === '0') {
         if (m === '0') {
           ret = `>=${M}.${m}.${p
-          }${z} <${M}.${m}.${+p + 1}-0`
+          } <${M}.${m}.${+p + 1}-0`
         } else {
           ret = `>=${M}.${m}.${p
-          }${z} <${M}.${+m + 1}.0-0`
+          } <${M}.${+m + 1}.0-0`
         }
       } else {
         ret = `>=${M}.${m}.${p
@@ -5378,6 +5394,10 @@ const replaceXRange = (comp, options) => {
   const r = options.loose ? re[t.XRANGELOOSE] : re[t.XRANGE]
   return comp.replace(r, (ret, gtlt, M, m, p, pr) => {
     debug('xRange', comp, ret, gtlt, M, m, p, pr)
+    if (invalidXRangeOrder(M, m, p)) {
+      return comp
+    }
+
     const xM = isX(M)
     const xm = xM || isX(m)
     const xp = xm || isX(p)
@@ -5553,6 +5573,22 @@ const { safeRe: re, t } = __nccwpck_require__(5471)
 
 const parseOptions = __nccwpck_require__(356)
 const { compareIdentifiers } = __nccwpck_require__(3348)
+
+const isPrereleaseIdentifier = (prerelease, identifier) => {
+  const identifiers = identifier.split('.')
+  if (identifiers.length > prerelease.length) {
+    return false
+  }
+
+  for (let i = 0; i < identifiers.length; i++) {
+    if (compareIdentifiers(prerelease[i], identifiers[i]) !== 0) {
+      return false
+    }
+  }
+
+  return true
+}
+
 class SemVer {
   constructor (version, options) {
     options = parseOptions(options)
@@ -5856,8 +5892,9 @@ class SemVer {
           if (identifierBase === false) {
             prerelease = [identifier]
           }
-          if (compareIdentifiers(this.prerelease[0], identifier) === 0) {
-            if (isNaN(this.prerelease[1])) {
+          if (isPrereleaseIdentifier(this.prerelease, identifier)) {
+            const prereleaseBase = this.prerelease[identifier.split('.').length]
+            if (isNaN(prereleaseBase)) {
               this.prerelease = prerelease
             }
           } else {
@@ -6367,6 +6404,61 @@ module.exports = sort
 
 /***/ }),
 
+/***/ 6114:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+
+
+const parse = __nccwpck_require__(6353)
+const constants = __nccwpck_require__(5101)
+const SemVer = __nccwpck_require__(7163)
+
+const truncate = (version, truncation, options) => {
+  if (!constants.RELEASE_TYPES.includes(truncation)) {
+    return null
+  }
+
+  const clonedVersion = cloneInputVersion(version, options)
+  return clonedVersion && doTruncation(clonedVersion, truncation)
+}
+
+const cloneInputVersion = (version, options) => {
+  const versionStringToParse = (
+    version instanceof SemVer ? version.version : version
+  )
+
+  return parse(versionStringToParse, options)
+}
+
+const doTruncation = (version, truncation) => {
+  if (isPrerelease(truncation)) {
+    return version.version
+  }
+
+  version.prerelease = []
+
+  switch (truncation) {
+    case 'major':
+      version.minor = 0
+      version.patch = 0
+      break
+    case 'minor':
+      version.patch = 0
+      break
+  }
+
+  return version.format()
+}
+
+const isPrerelease = (type) => {
+  return type.startsWith('pre')
+}
+
+module.exports = truncate
+
+
+/***/ }),
+
 /***/ 8780:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -6415,6 +6507,7 @@ const gte = __nccwpck_require__(1236)
 const lte = __nccwpck_require__(6717)
 const cmp = __nccwpck_require__(8646)
 const coerce = __nccwpck_require__(5385)
+const truncate = __nccwpck_require__(6114)
 const Comparator = __nccwpck_require__(9379)
 const Range = __nccwpck_require__(6782)
 const satisfies = __nccwpck_require__(8011)
@@ -6453,6 +6546,7 @@ module.exports = {
   lte,
   cmp,
   coerce,
+  truncate,
   Comparator,
   Range,
   satisfies,
@@ -6792,7 +6886,7 @@ createToken('LOOSE', `^${src[t.LOOSEPLAIN]}$`)
 createToken('GTLT', '((?:<|>)?=?)')
 
 // Something like "2.*" or "1.2.x".
-// Note that "x.x" is a valid xRange identifer, meaning "any version"
+// Note that "x.x" is a valid xRange identifier, meaning "any version"
 // Only the first item is strictly required.
 createToken('XRANGEIDENTIFIERLOOSE', `${src[t.NUMERICIDENTIFIERLOOSE]}|x|X|\\*`)
 createToken('XRANGEIDENTIFIER', `${src[t.NUMERICIDENTIFIER]}|x|X|\\*`)
@@ -7384,7 +7478,7 @@ const simpleSubset = (sub, dom, options) => {
         if (higher === c && higher !== gt) {
           return false
         }
-      } else if (gt.operator === '>=' && !satisfies(gt.semver, String(c), options)) {
+      } else if (gt.operator === '>=' && !c.test(gt.semver)) {
         return false
       }
     }
@@ -7402,7 +7496,7 @@ const simpleSubset = (sub, dom, options) => {
         if (lower === c && lower !== lt) {
           return false
         }
-      } else if (lt.operator === '<=' && !satisfies(lt.semver, String(c), options)) {
+      } else if (lt.operator === '<=' && !c.test(lt.semver)) {
         return false
       }
     }
@@ -36288,7 +36382,7 @@ var __awaiter = (undefined && undefined.__awaiter) || function (thisArg, _argume
 
 
 
-var lib_HttpCodes;
+var HttpCodes;
 (function (HttpCodes) {
     HttpCodes[HttpCodes["OK"] = 200] = "OK";
     HttpCodes[HttpCodes["MultipleChoices"] = 300] = "MultipleChoices";
@@ -36317,7 +36411,7 @@ var lib_HttpCodes;
     HttpCodes[HttpCodes["BadGateway"] = 502] = "BadGateway";
     HttpCodes[HttpCodes["ServiceUnavailable"] = 503] = "ServiceUnavailable";
     HttpCodes[HttpCodes["GatewayTimeout"] = 504] = "GatewayTimeout";
-})(lib_HttpCodes || (lib_HttpCodes = {}));
+})(HttpCodes || (HttpCodes = {}));
 var Headers;
 (function (Headers) {
     Headers["Accept"] = "accept";
@@ -36336,16 +36430,16 @@ function lib_getProxyUrl(serverUrl) {
     return proxyUrl ? proxyUrl.href : '';
 }
 const HttpRedirectCodes = [
-    lib_HttpCodes.MovedPermanently,
-    lib_HttpCodes.ResourceMoved,
-    lib_HttpCodes.SeeOther,
-    lib_HttpCodes.TemporaryRedirect,
-    lib_HttpCodes.PermanentRedirect
+    HttpCodes.MovedPermanently,
+    HttpCodes.ResourceMoved,
+    HttpCodes.SeeOther,
+    HttpCodes.TemporaryRedirect,
+    HttpCodes.PermanentRedirect
 ];
 const HttpResponseRetryCodes = [
-    lib_HttpCodes.BadGateway,
-    lib_HttpCodes.ServiceUnavailable,
-    lib_HttpCodes.GatewayTimeout
+    HttpCodes.BadGateway,
+    HttpCodes.ServiceUnavailable,
+    HttpCodes.GatewayTimeout
 ];
 const RetryableHttpVerbs = ['OPTIONS', 'GET', 'DELETE', 'HEAD'];
 const ExponentialBackoffCeiling = 10;
@@ -36535,7 +36629,7 @@ class lib_HttpClient {
                 // Check if it's an authentication challenge
                 if (response &&
                     response.message &&
-                    response.message.statusCode === lib_HttpCodes.Unauthorized) {
+                    response.message.statusCode === HttpCodes.Unauthorized) {
                     let authenticationHandler;
                     for (const handler of this.handlers) {
                         if (handler.canHandleAuthentication(response)) {
@@ -36911,7 +37005,7 @@ class lib_HttpClient {
                     headers: {}
                 };
                 // not found leads to null obj returned
-                if (statusCode === lib_HttpCodes.NotFound) {
+                if (statusCode === HttpCodes.NotFound) {
                     resolve(response);
                 }
                 // get the result from the body
@@ -47974,7 +48068,7 @@ function _unique(values) {
  * @param {unknown} error - Caught value (Error, AggregateError, or other).
  * @returns {string} Single-line message suitable for core.setFailed().
  */
-function error_utils_getErrorMessage (error) {
+function getErrorMessage (error) {
   if (error instanceof AggregateError && Array.isArray(error.errors)) {
     if (error.errors.length === 0) {
       return 'AggregateError (one or more operations failed)';
@@ -48073,7 +48167,7 @@ class Release {
  * @return {Array<Release>} Releases.
  */
 async function fetchReleases (githubToken) {
-  const userAgent = 'opentofu/setup-opentofu';
+  const userAgent = 'step-security/opentofu';
 
   const http = new lib_HttpClient(userAgent);
 
@@ -48087,11 +48181,11 @@ async function fetchReleases (githubToken) {
   try {
     resp = await http.get(url, headers);
   } catch (error) {
-    const cause = error_utils_getErrorMessage(error);
+    const cause = getErrorMessage(error);
     throw new Error(`Failed to fetch OpenTofu releases from ${url}: ${cause}`);
   }
 
-  if (resp.message.statusCode !== lib_HttpCodes.OK) {
+  if (resp.message.statusCode !== HttpCodes.OK) {
     throw new Error(
       'failed fetching releases (' + resp.message.statusCode + ')'
     );
@@ -48101,7 +48195,7 @@ async function fetchReleases (githubToken) {
   try {
     body = await resp.readBody();
   } catch (error) {
-    const cause = error_utils_getErrorMessage(error);
+    const cause = getErrorMessage(error);
     throw new Error(`Failed to read releases response: ${cause}`);
   }
 
@@ -48109,7 +48203,7 @@ async function fetchReleases (githubToken) {
   try {
     releasesMeta = JSON.parse(body);
   } catch (error) {
-    const cause = error_utils_getErrorMessage(error);
+    const cause = getErrorMessage(error);
     throw new Error(`Invalid releases JSON from ${url}: ${cause}`);
   }
 
@@ -48128,9 +48222,9 @@ async function fetchReleases (githubToken) {
  * @return {string} Raw SHA256SUMS file body.
  */
 async function fetchSHA256SUMS (version) {
-  const userAgent = 'opentofu/setup-opentofu';
+  const userAgent = 'step-security/opentofu';
 
-  const http = new HttpClient(userAgent);
+  const http = new lib_HttpClient(userAgent);
 
   const url = `https://github.com/opentofu/opentofu/releases/download/v${version}/tofu_${version}_SHA256SUMS`;
 
@@ -48300,7 +48394,6 @@ async function fileSHA256 (filePath) {
 
 
 
-
 // External
 
 
@@ -48331,59 +48424,13 @@ function mapOS (os) {
   return os;
 }
 
-async function computeSHA256 (filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = (0,external_crypto_.createHash)('sha256');
-    const stream = (0,external_fs_.createReadStream)(filePath);
-    stream.on('data', (data) => hash.update(data));
-    stream.on('end', () => resolve(hash.digest('hex')));
-    stream.on('error', reject);
-  });
-}
-
-async function verifyChecksum (zipPath, version, expectedName) {
-  const sumsUrl = `https://github.com/opentofu/opentofu/releases/download/v${version}/tofu_${version}_SHA256SUMS`;
-  core_debug(`Downloading SHA256SUMS from ${sumsUrl}`);
-
-  let sumsPath;
-  try {
-    sumsPath = await downloadTool(sumsUrl);
-  } catch (error) {
-    const cause = error_utils_getErrorMessage(error);
-    throw new Error(`Failed to download SHA256SUMS: ${cause}`);
-  }
-
-  const sumsContent = await external_fs_.promises.readFile(sumsPath, 'utf8');
-  const expectedLine = sumsContent
-    .split('\n')
-    .find((line) => line.includes(expectedName));
-
-  if (!expectedLine) {
-    throw new Error(`Checksum entry not found for ${expectedName} in SHA256SUMS`);
-  }
-
-  const expectedHash = expectedLine.split(/\s+/)[0];
-  const actualHash = await computeSHA256(zipPath);
-
-  core_debug(`Expected SHA256: ${expectedHash}`);
-  core_debug(`Actual SHA256:   ${actualHash}`);
-
-  if (actualHash !== expectedHash) {
-    throw new Error(
-      `SHA256 checksum mismatch for ${expectedName}. Expected ${expectedHash}, got ${actualHash}`
-    );
-  }
-
-  core_debug('SHA256 checksum verified successfully');
-}
-
-async function downloadAndExtractCLI (url, version, buildName, checksums) {
+async function downloadAndExtractCLI (url, checksums) {
   core_debug(`Downloading OpenTofu CLI from ${url}`);
   let pathToCLIZip;
   try {
     pathToCLIZip = await downloadTool(url);
   } catch (error) {
-    const cause = error_utils_getErrorMessage(error);
+    const cause = getErrorMessage(error);
     throw new Error(`Failed to download OpenTofu from ${url}: ${cause}`);
   }
 
@@ -48392,7 +48439,7 @@ async function downloadAndExtractCLI (url, version, buildName, checksums) {
     try {
       checksum = await fileSHA256(pathToCLIZip);
     } catch (error) {
-      const cause = error_utils_getErrorMessage(error);
+      const cause = getErrorMessage(error);
       throw new Error(`Failed to calculate the checksum for the OpenTofu CLI zip: ${cause}`);
     }
 
@@ -48404,9 +48451,6 @@ async function downloadAndExtractCLI (url, version, buildName, checksums) {
   if (!pathToCLIZip) {
     throw new Error(`Unable to download OpenTofu from ${url}`);
   }
-
-  // Verify SHA256 checksum
-  await verifyChecksum(pathToCLIZip, version, buildName);
 
   let pathToCLI;
 
@@ -48422,7 +48466,7 @@ async function downloadAndExtractCLI (url, version, buildName, checksums) {
       pathToCLI = await extractZip(pathToCLIZip);
     }
   } catch (error) {
-    const cause = error_utils_getErrorMessage(error);
+    const cause = getErrorMessage(error);
     throw new Error(`Failed to extract OpenTofu archive: ${cause}`);
   }
 
@@ -48433,6 +48477,42 @@ async function downloadAndExtractCLI (url, version, buildName, checksums) {
   }
 
   return pathToCLI;
+}
+
+// Resolve the checksums to validate the downloaded archive against. An explicit
+// `checksums` input always wins. Otherwise the action falls back to the SHA-256
+// checksum published in the release's SHA256SUMS file, so the default install
+// path is verified rather than left unchecked. Verification is skipped (with a
+// warning) only when no published checksum can be retrieved.
+async function resolveChecksums (checksums, version, fileName) {
+  if (checksums.length > 0) {
+    return checksums;
+  }
+
+  core_debug(
+    `No checksums input provided; fetching published SHA256SUMS for ${fileName}`
+  );
+
+  let publishedChecksum;
+  try {
+    publishedChecksum = await getDownloadChecksum(version, fileName);
+  } catch (error) {
+    warning(
+      `Failed to fetch published SHA256SUMS for OpenTofu ${version}: ${getErrorMessage(
+        error
+      )}. Proceeding without checksum verification.`
+    );
+    return [];
+  }
+
+  if (!publishedChecksum) {
+    warning(
+      `Could not find a published SHA256 checksum for ${fileName}. Proceeding without checksum verification.`
+    );
+    return [];
+  }
+
+  return [publishedChecksum];
 }
 
 async function installWrapper (pathToCLI) {
@@ -48565,12 +48645,14 @@ async function run () {
         pathToCLI = cachedPath;
       } else {
         core_debug(`OpenTofu version ${release.version} not found in cache, downloading...`);
-        const extractedPath = await downloadAndExtractCLI(build.url, release.version, build.name, checksums);
+        const effectiveChecksums = await resolveChecksums(checksums, release.version, build.name);
+        const extractedPath = await downloadAndExtractCLI(build.url, effectiveChecksums);
         core_debug(`Caching OpenTofu version ${release.version} to tool cache`);
         pathToCLI = await cacheDir(extractedPath, 'tofu', release.version, buildArch);
       }
     } else {
-      pathToCLI = await downloadAndExtractCLI(build.url, release.version, build.name, checksums);
+      const effectiveChecksums = await resolveChecksums(checksums, release.version, build.name);
+      pathToCLI = await downloadAndExtractCLI(build.url, effectiveChecksums);
     }
 
     // Install our wrapper
@@ -48597,7 +48679,7 @@ async function run () {
     }
     return release;
   } catch (error) {
-    core_error(error_utils_getErrorMessage(error));
+    core_error(getErrorMessage(error));
     throw error;
   }
 }
@@ -48660,7 +48742,7 @@ async function validateSubscription () {
     await validateSubscription();
     await setup_tofu();
   } catch (error) {
-    const message = error_utils_getErrorMessage(error);
+    const message = getErrorMessage(error);
     core_debug(getErrorDetail(error));
     setFailed(message);
   }

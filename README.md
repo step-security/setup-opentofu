@@ -79,7 +79,7 @@ Provider acceptance test environment variables can be configured automatically b
 
 ```yaml
 steps:
-- uses: opentofu/setup-opentofu@v2
+- uses: step-security/setup-opentofu@v2
   with:
     tofu_wrapper: false
     provider_acceptance_tests: true
@@ -94,7 +94,7 @@ To pin the expected hashes yourself instead, pass a newline-delimited list of ch
 
 ```yaml
 steps:
-- uses: opentofu/setup-opentofu@v2
+- uses: step-security/setup-opentofu@v2
   with:
     checksums: |
     933b060ab1cf05b106e94af1d370fd14b3006a6845495a67c68734269cc705ad
